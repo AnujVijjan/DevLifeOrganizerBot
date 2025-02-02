@@ -26,7 +26,7 @@ def list_tasks():
         })
 
     return jsonify({
-        "response_type": "ephemeral",  # Show the response only to the user who sent the command
+        "response_type": "ephemeral",
         "text": f"*Here are your tasks:* \n{formatted_tasks}"
     })
 
@@ -42,12 +42,10 @@ def add_task():
             "text": "Please provide a task description, e.g. `/addtask Fix bug in login API`"
         }), 400
 
-    # Add the task to the database
     add_task_to_db(task_text)
     
-    # Respond to Slack to confirm the task was added
     return jsonify({
-        "response_type": "ephemeral",  # Show the response only to the user who sent the command
+        "response_type": "ephemeral",
         "text": f"Task '{task_text}' has been added to your to-do list!"
     })
 
@@ -63,10 +61,9 @@ def mark_task_done():
             "text": "Please provide a task ID to mark as done, e.g. `/marktaskdone 1`"
         }), 400
 
-    # Update the task status to 'completed' (1) in the database
     update_task_to_db(task_id)
 
     return jsonify({
-        "response_type": "ephemeral",  # Show the response only to the user who sent the command
+        "response_type": "ephemeral",
         "text": f"Task ID {task_id} has been marked as done!"
     })
