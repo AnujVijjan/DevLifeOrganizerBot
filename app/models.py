@@ -1,9 +1,15 @@
 import sqlite3
 import os
+from typing import List, Tuple
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance', 'bot_data.db')
 
-def init_db():
+def init_db() -> None:
+    """
+    Initializes the database by creating the 'tasks' table if it does not exist.
+
+    :return: None
+    """
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("""
@@ -16,14 +22,25 @@ def init_db():
     conn.commit()
     conn.close()
 
-def add_task_to_db(task_text):
+def add_task_to_db(task_text: str) -> None:
+    """
+    Adds a new task to the database.
+
+    :param task_text: str -> The description of the task to be added.
+    :return: None
+    """
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("INSERT INTO tasks (task) VALUES (?)", (task_text,))
     conn.commit()
     conn.close()
 
-def get_tasks_from_db():
+def get_tasks_from_db() -> List[Tuple[int, str, int]]:
+    """
+    Retrieves all pending tasks from the database.
+
+    :return: List[Tuple[int, str, int]] -> A list of tasks, where each task is represented as (id, task, completed).
+    """
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM tasks WHERE completed = 0")
@@ -31,7 +48,13 @@ def get_tasks_from_db():
     conn.close()
     return tasks
 
-def update_task_to_db(task_id):
+def update_task_to_db(task_id: int) -> None:
+    """
+    Marks a task as completed in the database.
+
+    :param task_id: int -> The ID of the task to be marked as completed.
+    :return: None
+    """
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("UPDATE tasks SET completed = 1 WHERE id = ?", (task_id,))
