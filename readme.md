@@ -22,9 +22,8 @@ A personal Slack assistant that keeps track of your tasks, reminds you of import
 - ☐ **Automatic Standup Generator**
   - Tracks your GitHub commits and Jira tickets
   - Suggests a standup update draft for you
-- ☐ **Smart Reminders for Breaks & Health**
+- ✅ **Smart Reminders for Breaks & Health**
   - Reminds you to take breaks, drink water, or stretch
-  - Can nudge you if you’ve been active on GitHub for hours
 
 ## 📌 Roadmap
 - ✅ Daily Summary in the Morning
