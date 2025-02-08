@@ -25,6 +25,12 @@ def list_tasks() -> Dict[str, Any]:
     """
     tasks = get_tasks_from_db()
 
+    if not tasks:
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": "*Here are your tasks:* \nNo tasks available at the moment."
+        })
+
     formatted_tasks = [
         {
             "task_id": task[0],
