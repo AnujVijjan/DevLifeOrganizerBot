@@ -1,6 +1,7 @@
 from flask import Flask
 from .routes import app_routes
 from .scheduler import start_scheduler
+from .models import init_db
 
 def create_app() -> Flask:
     """
@@ -14,6 +15,9 @@ def create_app() -> Flask:
     """
     app = Flask(__name__)
 
+    # Initialize the database tables
+    init_db()
+    
     # Register blueprint for app routes
     app.register_blueprint(app_routes)
 

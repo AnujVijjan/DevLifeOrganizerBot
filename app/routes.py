@@ -1,6 +1,11 @@
 from flask import Blueprint, request, jsonify
 from .models import add_task_to_db, get_tasks_from_db, update_task_to_db
 from typing import Dict, Any
+from datetime import datetime, timedelta
+import sqlite3
+import os
+
+DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance', 'bot_data.db')
 
 app_routes = Blueprint('app_routes', __name__)
 
@@ -91,4 +96,45 @@ def mark_task_done() -> Dict[str, Any]:
     return jsonify({
         "response_type": "ephemeral",
         "text": f"Task ID {task_id} has been marked as done!"
+    })
+
+@app_routes.route("/slack/deepworkon", methods=["POST"])
+def enable_deep_work_mode() -> Dict[str, Any]:
+    """
+    Enables Deep Work Mode by muting notifications and setting an auto-reply.
+
+    :return: A JSON response confirming activation.
+    """
+    data = request.form
+    duration = int(data.get("text", 60))  # Default to 60 minutes if no duration is provided
+    end_time = datetime.utcnow() + timedelta(minutes=duration)
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM deep_work")  # Ensure only one active session
+    cursor.execute("INSERT INTO deep_work (active, end_time) VALUES (1, ?)", (end_time,))
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "response_type": "ephemeral",
+        "text": f"🔕 Deep Work Mode is ON for {duration} minutes! I'll auto-reply if someone messages you."
+    })
+
+@app_routes.route("/slack/deepworkoff", methods=["POST"])
+def disable_deep_work_mode() -> Dict[str, Any]:
+    """
+    Disables Deep Work Mode and unmutes notifications.
+
+    :return: A JSON response confirming deactivation.
+    """
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM deep_work")  # Clear deep work mode
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "response_type": "ephemeral",
+        "text": "✅ Deep Work Mode is OFF! You're back online."
     })

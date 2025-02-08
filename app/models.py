@@ -6,12 +6,13 @@ DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance', '
 
 def init_db() -> None:
     """
-    Initializes the database by creating the 'tasks' table if it does not exist.
-
+    Initializes the database by creating the necessary tables if they do not exist.
     :return: None
     """
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
+
+    # Create tasks table (if not exists)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -19,6 +20,16 @@ def init_db() -> None:
             completed INTEGER DEFAULT 0
         )
     """)
+
+    # Create deep work mode table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS deep_work (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            active INTEGER DEFAULT 0,
+            end_time TEXT
+        )
+    """)
+
     conn.commit()
     conn.close()
 

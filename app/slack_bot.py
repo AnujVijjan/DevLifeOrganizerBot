@@ -5,6 +5,11 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from typing import List, Tuple, Dict, Any
 from .models import get_tasks_from_db
+from .routes import disable_deep_work_mode
+import sqlite3
+import os
+
+DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance', 'bot_data.db')
 
 # Load environment variables
 load_dotenv()
@@ -180,3 +185,24 @@ def send_health_reminder() -> None:
         "Your body needs it! 🌱"
     )
     send_message_to_slack(message)
+
+
+def is_deep_work_active() -> bool:
+    """
+    Checks if Deep Work Mode is currently active.
+
+    :return: True if active, False otherwise.
+    """
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT end_time FROM deep_work WHERE active = 1")
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        end_time = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S.%f")
+        if datetime.utcnow() < end_time:
+            return True
+        else:
+            disable_deep_work_mode()  # Auto disable if time expired
+    return False
