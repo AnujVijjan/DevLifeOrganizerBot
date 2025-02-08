@@ -1,5 +1,5 @@
 from apscheduler.schedulers.background import BackgroundScheduler
-from .slack_bot import send_daily_summary, send_code_review_reminder
+from .slack_bot import send_daily_summary, send_code_review_reminder, send_health_reminder
 
 def start_scheduler() -> None:
     """
@@ -17,5 +17,8 @@ def start_scheduler() -> None:
 
     # Send PR review reminders at 10 AM
     scheduler.add_job(send_code_review_reminder, "cron", hour=10, minute=0)
+
+    # Send health reminders every 30 minutes
+    scheduler.add_job(send_health_reminder, "interval", minutes=30)
 
     scheduler.start()

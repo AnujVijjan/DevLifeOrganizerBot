@@ -167,3 +167,16 @@ def send_daily_summary() -> None:
     )
 
     send_message_to_slack(message)
+
+
+def send_health_reminder() -> None:
+    """
+    Sends a health reminder to the user after a certain period of inactivity.
+    Reminds them to take a break, drink water, or stretch.
+    :return: None
+    """
+    message: str = (
+        "💪 Time to take a break! Stretch, hydrate, or just step away from your screen for a few minutes. "
+        "Your body needs it! 🌱"
+    )
+    send_message_to_slack(message)
