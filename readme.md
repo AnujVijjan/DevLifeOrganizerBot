@@ -12,7 +12,7 @@ A personal Slack assistant that keeps track of your tasks, reminds you of import
   - Sends a morning summary of pending PR reviews and your to-do list
 - ✅ **Smart Code Review Reminders**
   - Notifies you if someone assigned you a PR, your PR is waiting for a review, or if a PR is stale
-- ☐ **Deep Work Mode (Slack Mute)**
+- ✅ **Deep Work Mode (Slack Mute)**
   - Temporarily mutes notifications with an auto-reply message
   - Turns off after a set time
 - ✅ **Quick To-Do List Inside Slack**
@@ -28,10 +28,10 @@ A personal Slack assistant that keeps track of your tasks, reminds you of import
 ## 📌 Roadmap
 - ✅ Daily Summary in the Morning
 - ✅ Smart Code Review Reminders
-- ☐ Deep Work Mode (Slack Mute)
+- ✅ Deep Work Mode (Slack Mute)
 - ✅ Quick To-Do List Inside Slack
 - ☐ Automatic Standup Generator
-- ☐ Smart Reminders for Breaks & Health
+- ✅ Smart Reminders for Breaks & Health
 
 ## 🤝 Contributing
 Contributions are welcome! Feel free to open an issue or submit a PR.
