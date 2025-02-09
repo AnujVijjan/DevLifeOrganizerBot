@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from .models import add_task_to_db, get_tasks_from_db, update_task_to_db
-from .slack_bot import handle_slack_mention
+from .slack_bot import handle_slack_mention, SLACK_USER_ID
 from typing import Dict, Any
 from datetime import datetime, timedelta
 import sqlite3
@@ -9,8 +9,6 @@ import os
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance', 'bot_data.db')
 
 app_routes = Blueprint('app_routes', __name__)
-
-SLACK_USER_ID = os.getenv("SLACK_USER_ID")
 
 @app_routes.route("/slack/events", methods=["POST"])
 def slack_events() -> Dict[str, Any]:

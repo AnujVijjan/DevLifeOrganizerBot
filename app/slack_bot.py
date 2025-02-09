@@ -22,6 +22,7 @@ GITHUB_ORG: str = os.getenv("GITHUB_ORG")
 GITHUB_BASE_URI: str = "https://api.github.com"
 
 SLACK_USER_TOKEN: str = os.getenv("SLACK_USER_TOKEN")
+SLACK_USER_ID: str = os.getenv("SLACK_USER_ID")
 
 client = WebClient(token=SLACK_BOT_TOKEN)
 
@@ -150,15 +151,17 @@ def send_code_review_reminder() -> None:
     client.chat_postMessage(channel=SLACK_CHANNEL, text=message)
 
 
-def send_message_to_slack(message: str) -> None:
+def send_message_to_slack(client: WebClient, message: str, channel: str) -> None:
     """
-    Sends a message to the Slack channel.
+    Sends a message to a specified Slack channel or user.
 
-    :param message: str -> The message to send.
+    :param client: WebClient -> The Slack WebClient instance used to send the message.
+    :param message: str -> The text message to be sent.
+    :param channel: str -> The Slack channel ID or user ID where the message will be sent.
     :return: None
-    :raises SlackApiError: If the Slack API call fails.
+    :raises SlackApiError: If the Slack API call fails due to an invalid token, network issue, or permission error.
     """
-    client.chat_postMessage(channel=SLACK_CHANNEL, text=message)
+    client.chat_postMessage(channel=channel, text=message)
 
 
 def send_daily_summary() -> None:
@@ -174,7 +177,7 @@ def send_daily_summary() -> None:
         else "📝 *Your Tasks for Today:*\n" + "\n".join(f"• {task[0]}" for task in tasks)
     )
 
-    send_message_to_slack(message)
+    send_message_to_slack(client, message, SLACK_CHANNEL)
 
 
 def send_health_reminder() -> None:
@@ -187,7 +190,8 @@ def send_health_reminder() -> None:
         "💪 Time to take a break! Stretch, hydrate, or just step away from your screen for a few minutes. "
         "Your body needs it! 🌱"
     )
-    send_message_to_slack(message)
+
+    send_message_to_slack(client, message, SLACK_USER_ID)
 
 
 def is_deep_work_active() -> bool:
@@ -222,9 +226,9 @@ def handle_slack_mention(event: Dict[str, Any]) -> None:
     if is_deep_work_active():
         user_id = event["user"]
 
-        auto_reply = (
+        message = (
             f"🔕 Hey <@{user_id}>, I'm currently in *Deep Work Mode* and not receiving notifications. "
             "I'll get back to you once I'm available! ⏳"
         )
 
-        user_client.chat_postMessage(channel=user_id, text=auto_reply)
+        send_message_to_slack(user_client, message, user_id)
