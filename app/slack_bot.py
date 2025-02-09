@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from typing import List, Tuple, Dict, Any
 from .models import get_tasks_from_db
-from .routes import disable_deep_work_mode
 import sqlite3
 import os
 
@@ -22,7 +21,11 @@ GITHUB_ORG: str = os.getenv("GITHUB_ORG")
 
 GITHUB_BASE_URI: str = "https://api.github.com"
 
+SLACK_USER_TOKEN: str = os.getenv("SLACK_USER_TOKEN")
+
 client = WebClient(token=SLACK_BOT_TOKEN)
+
+user_client = WebClient(token=SLACK_USER_TOKEN)
 
 HEADERS: Dict[str, str] = {
     "Authorization": f"token {GITHUB_TOKEN}",
@@ -204,5 +207,24 @@ def is_deep_work_active() -> bool:
         if datetime.utcnow() < end_time:
             return True
         else:
+            from .routes import disable_deep_work_mode
             disable_deep_work_mode()  # Auto disable if time expired
     return False
+
+
+def handle_slack_mention(event: Dict[str, Any]) -> None:
+    """
+    Handles Slack mentions and sends an auto-reply if Deep Work Mode is active.
+
+    :param event: The Slack event payload.
+    :return: None
+    """
+    if is_deep_work_active():
+        user_id = event["user"]
+
+        auto_reply = (
+            f"🔕 Hey <@{user_id}>, I'm currently in *Deep Work Mode* and not receiving notifications. "
+            "I'll get back to you once I'm available! ⏳"
+        )
+
+        user_client.chat_postMessage(channel=user_id, text=auto_reply)
