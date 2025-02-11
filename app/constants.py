@@ -11,6 +11,8 @@ DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance', '
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_USERNAME = os.getenv("GITHUB_USERNAME")
 GITHUB_ORG = os.getenv("GITHUB_ORG")
+GITHUB_BRANCH_NAMES = os.getenv("GITHUB_BRANCH_NAMES")
+REPO_SEARCH_KEYWORDS = os.getenv("REPO_SEARCH_KEYWORDS")
 GITHUB_BASE_URI = "https://api.github.com"
 
 GITHUB_HEADERS = {
