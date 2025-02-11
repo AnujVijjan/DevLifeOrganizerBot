@@ -1,5 +1,11 @@
 from apscheduler.schedulers.background import BackgroundScheduler
-from .slack_bot import send_daily_summary, send_code_review_reminder, send_health_reminder, DB_FILE, SLACK_CHANNEL, SLACK_BOT_TOKEN
+from .slack_bot import (
+    send_daily_summary, 
+    send_code_review_reminder, 
+    send_health_reminder, 
+    async_generate_standup,
+    DB_FILE, SLACK_CHANNEL, SLACK_BOT_TOKEN
+)
 from datetime import datetime
 import sqlite3
 from slack_sdk import WebClient
@@ -35,7 +41,8 @@ def start_scheduler() -> None:
     - Sends code review reminders at 10 AM.
     - Sends health reminders every 30 minutes.
     - Checks and auto-disables Deep Work Mode every 30 seconds.
-    
+    - Sends a daily standup report to Slack at 8 PM.
+
     :return: None
     """
     scheduler = BackgroundScheduler()
@@ -44,5 +51,6 @@ def start_scheduler() -> None:
     scheduler.add_job(send_code_review_reminder, "cron", hour=10, minute=0)
     scheduler.add_job(send_health_reminder, "interval", minutes=30)
     scheduler.add_job(auto_disable_deep_work_mode, "interval", seconds=30)
+    scheduler.add_job(async_generate_standup, "cron", hour=20, minute=0)
 
     scheduler.start()

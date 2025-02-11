@@ -1,10 +1,11 @@
 from flask import Blueprint, request, jsonify
 from .models import add_task_to_db, get_tasks_from_db, update_task_to_db
-from .slack_bot import handle_slack_mention, SLACK_USER_ID
+from .slack_bot import handle_slack_mention, SLACK_USER_ID, async_generate_standup
 from typing import Dict, Any
 from datetime import datetime, timedelta
 import sqlite3
 import os
+import threading
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance', 'bot_data.db')
 
@@ -147,4 +148,20 @@ def disable_deep_work_mode() -> Dict[str, Any]:
     return jsonify({
         "response_type": "ephemeral",
         "text": "✅ Deep Work Mode is OFF! You're back online."
+    })
+
+@app_routes.route("/slack/standup", methods=["POST"])
+def send_standup_update() -> Dict[str, Any]:
+    """
+    Handles the Slack command `/standup` and responds asynchronously to prevent timeout.
+
+    :return: A JSON response confirming that the standup report is being generated.
+    """
+    
+    # Respond immediately to prevent Slack timeout
+    threading.Thread(target=async_generate_standup).start()
+
+    return jsonify({
+        "response_type": "ephemeral",
+        "text": "⏳ Generating your standup report... Please wait a moment."
     })

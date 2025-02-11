@@ -7,6 +7,7 @@ from typing import List, Tuple, Dict, Any
 from .models import get_tasks_from_db
 import sqlite3
 import os
+import base64
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance', 'bot_data.db')
 
@@ -31,6 +32,16 @@ user_client = WebClient(token=SLACK_USER_TOKEN)
 HEADERS: Dict[str, str] = {
     "Authorization": f"token {GITHUB_TOKEN}",
     "Accept": "application/vnd.github.v3+json"
+}
+
+JIRA_BASE_URL: str = os.getenv("JIRA_BASE_URL")
+JIRA_EMAIL: str = os.getenv("JIRA_EMAIL")
+JIRA_API_TOKEN: str = os.getenv("JIRA_API_TOKEN")
+JIRA_PROJECT_KEY: str = os.getenv("JIRA_PROJECT_KEY")
+
+JIRA_HEADERS: Dict[str, str] = {
+    "Authorization": f"Basic {base64.b64encode(f'{JIRA_EMAIL}:{JIRA_API_TOKEN}'.encode()).decode()}",
+    "Content-Type": "application/json"
 }
 
 
@@ -232,3 +243,87 @@ def handle_slack_mention(event: Dict[str, Any]) -> None:
         )
 
         send_message_to_slack(user_client, message, user_id)
+
+
+def fetch_recent_commits() -> List[str]:
+    """
+    Fetches recent commits from tracked repositories for the authenticated user.
+
+    :return: A list of formatted commit messages with repository names and URLs.
+    """
+    since = (datetime.utcnow() - timedelta(days=1)).isoformat() + "Z"
+    repositories = fetch_filtered_repositories()
+    user_commits = []
+
+    for repo in repositories:
+        url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/commits"
+        response = requests.get(url, headers=HEADERS, params={"author": GITHUB_USERNAME, "since": since})
+        
+        if response.status_code == 200:
+            commits = response.json()
+            for commit in commits:
+                message = commit["commit"]["message"]
+                url = commit["html_url"]
+                user_commits.append(f"🔹 *{repo}* - {message} [{url}]")
+
+    return user_commits
+
+
+def fetch_recent_jira_updates() -> List[str]:
+    """
+    Fetches Jira issues that were updated in the last 24 hours for the authenticated user.
+
+    :return: A list of formatted Jira issue updates with their status and URLs.
+    """
+    since = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M")
+    jql_query = f'project = {JIRA_PROJECT_KEY} AND assignee = "{JIRA_EMAIL}" AND updated >= "{since}" ORDER BY updated DESC'
+    
+    url = f"{JIRA_BASE_URL}/rest/api/2/search"
+    response = requests.get(url, headers=JIRA_HEADERS, params={"jql": jql_query, "maxResults": 10})
+    
+    updates = []
+    if response.status_code == 200:
+        issues = response.json()["issues"]
+        for issue in issues:
+            key = issue["key"]
+            summary = issue["fields"]["summary"]
+            status = issue["fields"]["status"]["name"]
+            url = f"{JIRA_BASE_URL}/browse/{key}"
+            updates.append(f"📝 *{key}* - {summary} ({status}) [{url}]")
+
+    return updates
+
+
+def generate_standup_report() -> str:
+    """
+    Generates a standup report summarizing recent GitHub commits and Jira ticket updates.
+
+    :return: A formatted string containing the standup summary.
+    """
+    commits = fetch_recent_commits()
+    jira_updates = fetch_recent_jira_updates()
+
+    standup_text = "*🚀 Daily Standup Summary:*\n\n"
+
+    if commits:
+        standup_text += "*✅ Code Commits:*\n" + "\n".join(commits) + "\n\n"
+    else:
+        standup_text += "*✅ Code Commits:*\nNo recent commits.\n\n"
+
+    if jira_updates:
+        standup_text += "*📌 Jira Updates:*\n" + "\n".join(jira_updates)
+    else:
+        standup_text += "*📌 Jira Updates:*\nNo recent activity."
+
+    return standup_text
+
+
+def async_generate_standup() -> None:
+    """
+    Generates the standup report asynchronously and sends it to Slack using a response URL.
+
+    :param response_url: The Slack response URL to send the delayed message.
+    :return: None
+    """
+    standup_report = generate_standup_report()
+    send_message_to_slack(client, standup_report, SLACK_CHANNEL)
