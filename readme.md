@@ -19,7 +19,7 @@ A personal Slack assistant that keeps track of your tasks, reminds you of import
   - `/addtask Fix bug in login API` → adds a task
   - `/listtask` → shows all tasks
   - `/marktaskdone <task_id>` → marks a task as done
-- ☐ **Automatic Standup Generator**
+- ✅ **Automatic Standup Generator**
   - Tracks your GitHub commits and Jira tickets
   - Suggests a standup update draft for you
 - ✅ **Smart Reminders for Breaks & Health**
@@ -30,7 +30,7 @@ A personal Slack assistant that keeps track of your tasks, reminds you of import
 - ✅ Smart Code Review Reminders
 - ✅ Deep Work Mode (Slack Mute)
 - ✅ Quick To-Do List Inside Slack
-- ☐ Automatic Standup Generator
+- ✅ Automatic Standup Generator
 - ✅ Smart Reminders for Breaks & Health
 
 ## 🤝 Contributing
