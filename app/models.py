@@ -1,8 +1,6 @@
 import sqlite3
-import os
 from typing import List, Tuple
-
-DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance', 'bot_data.db')
+from .constants import DB_FILE
 
 def init_db() -> None:
     """

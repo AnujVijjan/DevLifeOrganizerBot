@@ -1,13 +1,11 @@
 from flask import Blueprint, request, jsonify
 from .models import add_task_to_db, get_tasks_from_db, update_task_to_db
-from .slack_bot import handle_slack_mention, SLACK_USER_ID, async_generate_standup
+from .slack_bot import handle_slack_mention, async_generate_standup
 from typing import Dict, Any
 from datetime import datetime, timedelta
 import sqlite3
-import os
 import threading
-
-DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance', 'bot_data.db')
+from .constants import SLACK_USER_ID, DB_FILE
 
 app_routes = Blueprint('app_routes', __name__)
 
