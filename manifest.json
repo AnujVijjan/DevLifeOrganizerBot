@@ -1,0 +1,88 @@
+{
+    "display_information": {
+        "name": "Dev Life Organizer"
+    },
+    "features": {
+        "bot_user": {
+            "display_name": "Dev Life Organizer",
+            "always_online": false
+        },
+        "slash_commands": [
+            {
+                "command": "/addtask",
+                "url": "https://yourdomain.com/slack/add_task",
+                "description": "Add a task to your to-do list",
+                "usage_hint": "/addtask Fix the login bug",
+                "should_escape": false
+            },
+            {
+                "command": "/listtasks",
+                "url": "https://yourdomain.com/slack/list_tasks",
+                "description": "This is the endpoint for listing all tasks stored in the bot’s SQLite database. When accessed, it will return a list of all tasks that are not yet completed, allowing you to review your current to-do list.",
+                "usage_hint": "/listtasks",
+                "should_escape": false
+            },
+            {
+                "command": "/marktaskdone",
+                "url": "https://yourdomain.com/slack/mark_task_done",
+                "description": "Mark a task as completed.",
+                "usage_hint": "<task_id>",
+                "should_escape": false
+            },
+            {
+                "command": "/deepworkon",
+                "url": "https://yourdomain.com/slack/deepworkon",
+                "description": "Enables Deep Work Mode for N minutes",
+                "usage_hint": "<minute(s)>",
+                "should_escape": false
+            },
+            {
+                "command": "/deepworkoff",
+                "url": "https://yourdomain.com/slack/deepworkoff",
+                "description": "Turns off Deep Work Mode manually",
+                "should_escape": false
+            },
+            {
+                "command": "/standup",
+                "url": "https://yourdomain.com/slack/standup",
+                "description": "Allow users to request their standup draft",
+                "should_escape": false
+            }
+        ]
+    },
+    "oauth_config": {
+        "scopes": {
+            "user": [
+                "im:history",
+                "im:write",
+                "chat:write"
+            ],
+            "bot": [
+                "app_mentions:read",
+                "channels:history",
+                "chat:write",
+                "commands",
+                "im:history",
+                "reminders:write",
+                "users:read",
+                "im:write"
+            ]
+        }
+    },
+    "settings": {
+        "event_subscriptions": {
+            "request_url": "https://yourdomain.com/slack/events",
+            "user_events": [
+                "message.im"
+            ],
+            "bot_events": [
+                "app_mention",
+                "message.channels",
+                "message.im"
+            ]
+        },
+        "org_deploy_enabled": false,
+        "socket_mode_enabled": false,
+        "token_rotation_enabled": false
+    }
+}
