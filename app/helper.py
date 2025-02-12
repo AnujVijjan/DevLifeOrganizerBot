@@ -52,6 +52,7 @@ def fetch_pull_requests(repo: str) -> List[Dict[str, Any]]:
     
     pr_list = response.json()
     branch_names = [branch.strip() for branch in GITHUB_BRANCH_NAMES.split(",") if branch.strip()]
+    
     # Filter PRs to include only those where the base branch is in our list
     filtered_pr_list = [
         pr for pr in pr_list if pr.get("base", {}).get("ref") in branch_names
@@ -76,7 +77,7 @@ def fetch_recent_commits() -> List[str]:
             params = {
                 "author": GITHUB_USERNAME,
                 "since": since,
-                "sha": branch  # specify branch to fetch commits from
+                "sha": branch
             }
             response = requests.get(url, headers=GITHUB_HEADERS, params=params)
             if response.status_code == 200:

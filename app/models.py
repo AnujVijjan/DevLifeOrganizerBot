@@ -10,7 +10,6 @@ def init_db() -> None:
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
-    # Create tasks table (if not exists)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -19,7 +18,6 @@ def init_db() -> None:
         )
     """)
 
-    # Create deep work mode table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS deep_work (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
