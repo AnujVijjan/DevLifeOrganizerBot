@@ -8,7 +8,19 @@ from .helper import (
     fetch_filtered_repositories, 
     fetch_pull_requests, 
     fetch_recent_commits, 
-    fetch_recent_jira_updates
+    fetch_recent_jira_updates,
+    get_repo_branches,
+    detect_dev_branch,
+    validate_branch_exists,
+    get_existing_pr,
+    jira_weblink_exists,
+    create_pull_request,
+    add_jira_pr_link,
+    get_jira_issue_status,
+    get_qa_tester_account_id,
+    assign_jira_issue,
+    get_jira_transitions,
+    transition_jira_issue
 )
 from .constants import *
 
@@ -195,3 +207,139 @@ def async_generate_standup() -> None:
     """
     standup_report = generate_standup_report()
     send_message_to_slack(client, standup_report, SLACK_CHANNEL)
+
+
+def handle_create_pr(jira_ticket: str, feature_branch: str, repo_name: str) -> None:
+    """
+    Creates PR and manages Jira automation.
+    """
+
+    try:
+
+        ticket_link = f"<{JIRA_BASE_URL}/browse/{jira_ticket}|{jira_ticket}>"
+
+        pr_created = False
+        jira_link_added = False
+        ticket_moved = False
+        ticket_assigned = False
+
+        branches = get_repo_branches(repo_name)
+
+        if not branches:
+            send_message_to_slack(
+                client,
+                f"Unable to fetch branches for repo `{repo_name}`.",
+                SLACK_CHANNEL
+            )
+            return
+
+        dev_branch = detect_dev_branch(branches)
+
+        validate_branch_exists(repo_name, feature_branch)
+
+        existing_pr = get_existing_pr(repo_name, feature_branch, dev_branch)
+
+        if existing_pr:
+            pr_url = existing_pr["html_url"]
+        else:
+
+            pr = create_pull_request(
+                repo=repo_name,
+                feature_branch=feature_branch,
+                dev_branch=dev_branch,
+                jira_ticket=jira_ticket
+            )
+
+            pr_url = pr["html_url"]
+            pr_created = True
+
+        if not jira_weblink_exists(jira_ticket, pr_url):
+
+            add_jira_pr_link(
+                ticket=jira_ticket,
+                pr_url=pr_url,
+                repo=repo_name
+            )
+
+            jira_link_added = True
+
+        current_status = get_jira_issue_status(jira_ticket)
+
+        if current_status == JIRA_STATUS_IN_PROGRESS:
+
+            transitions = get_jira_transitions(jira_ticket)
+
+            code_review_transition = next(
+                (
+                    t for t in transitions
+                    if t["name"].lower() == JIRA_STATUS_CODE_REVIEW.lower()
+                ),
+                None
+            )
+
+            if code_review_transition:
+
+                transition_jira_issue(
+                    jira_ticket,
+                    code_review_transition["id"]
+                )
+
+                ticket_moved = True
+
+                qa_account_id = get_qa_tester_account_id(jira_ticket)
+
+                assign_jira_issue(
+                    jira_ticket,
+                    qa_account_id
+                )
+
+                ticket_assigned = True
+
+        message = [
+            "*PR Automation Result*",
+            "",
+            f"*Ticket:* {ticket_link}",
+            f"*Repo:* {repo_name}",
+            f"*Feature Branch:* {feature_branch}",
+            f"*Dev Branch:* {dev_branch}",
+            "",
+            f"*PR:* {pr_url}",
+            ""
+        ]
+
+        if pr_created:
+            message.append("• PR was created.")
+
+        else:
+            message.append("• PR already existed.")
+
+        if jira_link_added:
+            message.append("• Jira PR link was added.")
+
+        else:
+            message.append("• Jira PR link already existed.")
+
+        if ticket_moved:
+            message.append("• Ticket moved to *CodeReview*.")
+
+        if ticket_assigned:
+            message.append("• Ticket assigned to QA tester.")
+
+        if current_status != JIRA_STATUS_IN_PROGRESS:
+            message.append(
+                f"• Ticket status is `{current_status}`, so no workflow change was performed."
+            )
+
+        send_message_to_slack(
+            client,
+            "\n".join(message),
+            SLACK_CHANNEL
+        )
+
+    except Exception as e:
+
+        send_message_to_slack(
+            client,
+            f"PR automation failed: {str(e)}",
+            SLACK_CHANNEL
+        )

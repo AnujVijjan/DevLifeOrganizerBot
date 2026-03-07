@@ -109,3 +109,209 @@ def fetch_recent_jira_updates() -> List[str]:
             url = f"{JIRA_BASE_URL}/browse/{key}"
             updates.append(f"📝 *{key}* - {summary} ({status}) [{url}]")
     return updates
+
+def get_repo_branches(repo: str) -> List[str]:
+    """
+    Fetch all branches for a repository.
+    """
+
+    url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/branches"
+
+    response = requests.get(url, headers=GITHUB_HEADERS)
+
+    if response.status_code != 200:
+        raise Exception(f"Unable to fetch branches: {response.text}")
+
+    return [branch["name"] for branch in response.json()]
+
+def detect_dev_branch(branches: List[str]) -> str:
+    """
+    Determines dev branch using priority detection.
+    """
+
+    branch_set = set(branches)
+
+    for branch in ["develop", "dev", "main", "master"]:
+        if branch in branch_set:
+            return branch
+
+    raise Exception(f"Unable to determine dev branch from branches: {branches}")
+
+def validate_branch_exists(repo: str, branch: str) -> None:
+    """
+    Ensures the feature branch exists in repo.
+    """
+
+    url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/branches/{branch}"
+
+    response = requests.get(url, headers=GITHUB_HEADERS)
+
+    if response.status_code != 200:
+        raise Exception(f"Branch `{branch}` does not exist in repo `{repo}`.")
+    
+def get_existing_pr(repo: str, feature_branch: str, dev_branch: str):
+    """
+    Returns existing PR if present.
+    """
+
+    url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/pulls"
+
+    params = {
+        "head": f"{GITHUB_ORG}:{feature_branch}",
+        "base": dev_branch,
+        "state": "open"
+    }
+
+    response = requests.get(url, headers=GITHUB_HEADERS, params=params)
+
+    if response.status_code != 200:
+        return None
+
+    prs = response.json()
+
+    if prs:
+        return prs[0]
+
+    return None
+
+def create_pull_request(repo: str, feature_branch: str, dev_branch: str, jira_ticket: str) -> Dict[str, Any]:
+
+    url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/pulls"
+
+    payload = {
+        "title": f"[{jira_ticket}] Merge {feature_branch} into {dev_branch}",
+        "head": feature_branch,
+        "base": dev_branch,
+        "body": f"Auto-created PR for Jira ticket {jira_ticket}"
+    }
+
+    response = requests.post(url, headers=GITHUB_HEADERS, json=payload)
+
+    if response.status_code not in [200, 201]:
+        raise Exception(f"GitHub PR creation failed: {response.text}")
+
+    return response.json()
+
+def add_jira_pr_link(ticket: str, pr_url: str, repo: str):
+
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket}/remotelink"
+
+    payload = {
+        "object": {
+            "url": pr_url,
+            "title": f"{repo} (DEV)"
+        }
+    }
+
+    response = requests.post(url, headers=JIRA_HEADERS, json=payload)
+
+    if response.status_code not in [200, 201]:
+        raise Exception(f"Failed to add Jira link: {response.text}")
+    
+def jira_weblink_exists(ticket: str, url: str) -> bool:
+    """
+    Checks if a Jira issue already has the PR web link.
+    """
+
+    api = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket}/remotelink"
+
+    response = requests.get(api, headers=JIRA_HEADERS)
+
+    if response.status_code != 200:
+        return False
+
+    links = response.json()
+
+    for link in links:
+        if link.get("object", {}).get("url") == url:
+            return True
+
+    return False
+
+def get_jira_issue(ticket: str):
+
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket}"
+
+    response = requests.get(url, headers=JIRA_HEADERS)
+
+    if response.status_code != 200:
+        raise Exception(f"Unable to fetch Jira issue {ticket}")
+
+    return response.json()
+
+def get_jira_issue(ticket: str):
+
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket}"
+
+    response = requests.get(url, headers=JIRA_HEADERS)
+
+    if response.status_code != 200:
+        raise Exception(f"Unable to fetch Jira issue {ticket}")
+
+    return response.json()
+
+def get_qa_tester_account_id(ticket: str):
+
+    issue = get_jira_issue(ticket)
+
+    qa_field = issue["fields"].get(JIRA_QA_TESTER_FIELD)
+
+    if not qa_field:
+        raise Exception("QA Tester not set on Jira ticket.")
+
+    # If field returns a list (multi user picker)
+    if isinstance(qa_field, list):
+        return qa_field[0]["accountId"]
+
+    # If field returns a single user
+    return qa_field["accountId"]
+
+def assign_jira_issue(ticket: str, account_id: str):
+
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket}/assignee"
+
+    payload = {
+        "accountId": account_id
+    }
+
+    response = requests.put(url, headers=JIRA_HEADERS, json=payload)
+
+    if response.status_code not in [200, 204]:
+        raise Exception("Failed to assign Jira issue.")
+    
+def get_jira_transitions(ticket: str):
+
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket}/transitions"
+
+    response = requests.get(url, headers=JIRA_HEADERS)
+
+    if response.status_code != 200:
+        raise Exception("Failed to fetch Jira transitions")
+
+    data = response.json()
+
+    return data.get("transitions", [])
+
+def transition_jira_issue(ticket: str, transition_id: str):
+
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket}/transitions"
+
+    payload = {
+        "transition": {
+            "id": transition_id
+        }
+    }
+
+    response = requests.post(url, headers=JIRA_HEADERS, json=payload)
+
+    if response.status_code not in [200, 204]:
+        raise Exception("Failed to transition Jira issue.")
+    
+def get_jira_issue_status(ticket: str) -> str:
+    """
+    Returns the current Jira issue status.
+    """
+
+    issue = get_jira_issue(ticket)
+
+    return issue["fields"]["status"]["name"]

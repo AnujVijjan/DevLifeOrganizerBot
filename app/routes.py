@@ -163,3 +163,44 @@ def send_standup_update() -> Dict[str, Any]:
         "response_type": "ephemeral",
         "text": "⏳ Generating your standup report... Please wait a moment."
     })
+
+@app_routes.route("/slack/createpr", methods=["POST"])
+def create_pr() -> Dict[str, Any]:
+    """
+    Slack command:
+    /createpr TICKET-123 feature-branch repo-name
+    """
+
+    data = request.form
+    text = data.get("text", "").strip()
+
+    if not text:
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": "Usage: `/createpr TICKET-123 feature-branch repo-name`"
+        })
+
+    parts = text.split()
+
+    if len(parts) != 3:
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": "Usage: `/createpr TICKET-123 feature-branch repo-name`"
+        })
+
+    jira_ticket, feature_branch, repo_name = parts
+
+    from .slack_bot import handle_create_pr
+    import threading
+
+    # Run PR creation in background thread
+    threading.Thread(
+        target=handle_create_pr,
+        args=(jira_ticket, feature_branch, repo_name)
+    ).start()
+
+    # Immediate response to Slack
+    return jsonify({
+        "response_type": "ephemeral",
+        "text": "Creating PR... please wait ⏳"
+    })
