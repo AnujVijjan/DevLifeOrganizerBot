@@ -1,98 +1,152 @@
 # Dev Life Organizer Bot
 
-A personal Slack assistant that keeps track of your tasks, reminds you of important events, and automates routine actions.
+A Slack bot that automates the repetitive parts of a developer's day — task tracking, PR creation, Jira workflow transitions, standup reports, Deep Work mode, and more.
 
-## 🚀 Why Use This?
-- **Structured Workday:** Manage tasks and reminders without leaving Slack.
-- **Automation:** Automatically track tasks, code reviews, and standup updates.
-- **Focus:** Reduce distractions and boost productivity by automating routine actions.
+---
 
 ## Features
-- **Daily Summary in the Morning**
-  - Sends a morning summary of pending PR reviews and your to-do list.
-- **Smart Code Review Reminders**
-  - Notifies you when you have assigned PRs, pending reviews, or stale PRs.
-- **Deep Work Mode (Slack Mute)**
-  - Temporarily mutes notifications with an auto-reply message.
-  - Automatically turns off after a set duration.
-- **Quick To-Do List Inside Slack**
-  - `/addtask Fix bug in login API` → Adds a new task.
-  - `/listtask` → Displays all pending tasks.
-  - `/marktaskdone <task_id>` → Marks a task as complete.
-- **Automatic Standup Generator**
-  - Tracks your GitHub commits and Jira tickets.
-  - Suggests a standup update draft for you.
-- **Smart Reminders for Breaks & Health**
-  - Reminds you to take breaks, hydrate, or stretch throughout the day.
 
-## 📌 Roadmap
-- Daily Summary in the Morning
-- Smart Code Review Reminders
-- Deep Work Mode (Slack Mute)
-- Quick To-Do List Inside Slack
-- Automatic Standup Generator
-- Smart Reminders for Breaks & Health
+### Task Management
+- `/addtask <description>` — Add a task to your to-do list
+- `/listtasks` — View all pending tasks
+- `/marktaskdone <task_id>` — Mark a task as complete
 
-## 🔧 Installation
+### PR Automation
+- `/createpr <TICKET-ID> <feature-branch> <repo>` — Creates a PR from your feature branch into the detected dev branch, adds the PR link to the Jira ticket, and transitions the ticket to CodeReview
+- `/createprodpr <TICKET-ID>` — Reads all DEV PR links from the Jira ticket, cherry-picks their commits onto a clean PROD branch, opens a PROD PR per repo, and links it back to the ticket
+
+### Standup Report
+- `/standup` — Generates a standup draft from your GitHub commits and Jira updates from the past 24 hours
+
+### Deep Work Mode
+- `/deepworkon <minutes>` — Mutes notifications and sets an auto-reply for anyone who messages you (default: 60 minutes)
+- `/deepworkoff` — Disables Deep Work Mode immediately
+
+### Scheduled Reminders
+- **10:00 AM** — Daily task summary + code review reminders
+- **Every 30 minutes** — Health and break reminder
+- **8:00 PM** — End-of-day standup report
+
+---
+
+## How PR Automation Works
+
+### DEV PR (`/createpr`)
+1. Detects the dev branch of the repo (`develop` → `dev` → `main` → `master`)
+2. Creates a PR from your feature branch into the dev branch (or reuses an existing open one)
+3. Adds the PR link to the Jira ticket as a web link
+4. If the ticket is "In Progress", transitions it to CodeReview and assigns it to the QA tester
+
+### PROD PR (`/createprodpr`)
+1. Reads all `(DEV)` web links attached to the Jira ticket
+2. For each repo found, detects the prod branch (`prod` → `production` → `master`)
+3. Creates a `{TICKET-ID}-Prod` branch from the prod branch's HEAD
+4. Cherry-picks the DEV PR commits onto the PROD branch via the GitHub Git Data API — no dev-only history brought along
+5. Opens a PROD PR with the cherry-picked commit list in the body
+6. Adds the PROD PR link to the Jira ticket
+7. Re-running on a ticket that already has a PROD PR will cherry-pick any new commits and refresh the PR body
+
+---
+
+## CLI
+
+All Slack commands are also available as a CLI for local use:
+
+```bash
+python cli.py addtask "Fix the login bug"
+python cli.py listtasks
+python cli.py marktaskdone 3
+
+python cli.py deepworkon 90
+python cli.py deepworkoff
+
+python cli.py standup
+
+python cli.py createpr CAH-123 my-feature-branch MyRepo
+python cli.py createprodpr CAH-123
+```
+
+---
+
+## Setup
 
 ### Prerequisites
-- **Python 3.7+**
-- **Slack Workspace:** A Slack app must be created with the appropriate scopes and slash commands.
-- **GitHub & Jira Accounts:** Ensure you have API access for integration.
+- Python 3.8+
+- A Slack workspace with a Slack app created ([Slack API](https://api.slack.com/apps))
+- A GitHub organisation with a personal access token (`repo` + `read:org` scopes)
+- A Jira cloud instance with an API token ([Atlassian API tokens](https://id.atlassian.com/manage-profile/security/api-tokens))
 
-### Steps
+### 1. Clone the repository
 
-1. **Clone the Repository:**
+```bash
+git clone https://github.com/your-username/DevLifeOrganizerBot.git
+cd DevLifeOrganizerBot
+```
 
-   ```bash
-   git clone https://github.com/AnujVijjan/DevLifeOrganizerBot.git
-   cd DevLifeOrganizerBot
-   ```
+### 2. Create a virtual environment and install dependencies
 
-2. **Create and Activate a Virtual Environment:**
+```bash
+python -m venv venv
+source venv/bin/activate      # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate   # On Windows: venv\Scripts\activate
-   ```
+### 3. Configure environment variables
 
-3. **Install Dependencies:**
+```bash
+cp sample.env .env
+```
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+Edit `.env` with your credentials. See [Environment Variables](#environment-variables) below for a full reference.
 
-4. **Set Up Environment Variables:**
+### 4. Configure the Slack app
 
-   Copy the provided `sample.env` file to `.env` and update it with your own configuration:
+- Import `manifest.json` into the [Slack Developer Portal](https://api.slack.com/apps) using **Create New App → From a manifest**
+- Replace `https://yourdomain.com` in `manifest.json` with your actual public URL (or an ngrok tunnel for local dev)
+- Install the app to your workspace and copy the bot/user tokens into `.env`
 
-   ```bash
-   cp sample.env .env
-   ```
+### 5. Run the bot
 
-   The `sample.env` file contains placeholder values for:
-   - Slack credentials
-   - GitHub credentials (including branch names and search keywords)
-   - Jira credentials
+```bash
+python run.py
+```
 
-   **Make sure to update the values in `.env` before running the application.**
+For local development, expose the server with [ngrok](https://ngrok.com/):
 
-5. **Configure Your Slack App:**
+```bash
+ngrok http 5000
+```
 
-   - **Manifest:** Use the included `manifest.json` file as a starting point.  
-     **Important:** Replace any development URLs (such as ngrok URLs) with your own public endpoint if you're deploying in production.
-   - **Setup:** Import the manifest in the Slack Developer Portal and complete any additional configuration (e.g., OAuth scopes, event subscriptions).
-   - **Installation:** Install the app to your Slack workspace.
+---
 
-6. **Run the Application:**
+## Environment Variables
 
-   If you’re using Flask, for example, run:
+| Variable | Required | Description |
+|---|---|---|
+| `SLACK_BOT_TOKEN` | Yes | Bot token (`xoxb-...`) for posting to channels |
+| `SLACK_USER_TOKEN` | Yes | User token (`xoxp-...`) for Deep Work DMs |
+| `SLACK_CHANNEL` | Yes | Channel where the bot posts (e.g. `#dev-life`) |
+| `SLACK_USER_ID` | Yes | Your Slack user ID (e.g. `U012AB3CD`) |
+| `GITHUB_TOKEN` | Yes | Personal access token with `repo` + `read:org` scopes |
+| `GITHUB_USERNAME` | Yes | Your GitHub username |
+| `GITHUB_ORG` | Yes | GitHub organisation name |
+| `GITHUB_BRANCH_NAMES` | Yes | Comma-separated branches to monitor (e.g. `master,develop`) |
+| `REPO_SEARCH_KEYWORDS` | Yes | Comma-separated keywords to filter repos by name |
+| `JIRA_BASE_URL` | Yes | Your Jira instance URL (e.g. `https://company.atlassian.net`) |
+| `JIRA_EMAIL` | Yes | Email linked to your Jira account |
+| `JIRA_API_TOKEN` | Yes | Jira API token |
+| `JIRA_PROJECT_KEY` | Yes | Project key for standup JQL queries (e.g. `PROJ`) |
+| `JIRA_STATUS_IN_PROGRESS` | No | Status that triggers CodeReview transition (default: `In Progress`) |
+| `JIRA_STATUS_CODE_REVIEW` | No | Transition name after PR creation (default: `CodeReview`) |
+| `JIRA_QA_TESTER_FIELD` | No | Custom field ID for QA tester (default: `customfield_10111`) |
 
-   ```bash
-   flask run
-   ```
+To find your `JIRA_QA_TESTER_FIELD` ID, visit:
+```
+https://yourcompany.atlassian.net/rest/api/3/field
+```
 
-   Ensure that your app is reachable from the public internet (use a tunneling tool like ngrok during development).
+---
 
-## 🤝 Contributing
-Contributions are welcome! Please open an issue or submit a pull request with your improvements or bug fixes.
+## Contributing
+
+Contributions are welcome. Please open an issue first to discuss what you'd like to change, then submit a pull request.

@@ -25,9 +25,9 @@ JIRA_BASE_URL = os.getenv("JIRA_BASE_URL")
 JIRA_EMAIL = os.getenv("JIRA_EMAIL")
 JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
 JIRA_PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY")
-JIRA_STATUS_IN_PROGRESS = "In Progress"
-JIRA_STATUS_CODE_REVIEW = "CodeReview"
-JIRA_QA_TESTER_FIELD = "customfield_10111"
+JIRA_STATUS_IN_PROGRESS = os.getenv("JIRA_STATUS_IN_PROGRESS", "In Progress")
+JIRA_STATUS_CODE_REVIEW = os.getenv("JIRA_STATUS_CODE_REVIEW", "CodeReview")
+JIRA_QA_TESTER_FIELD = os.getenv("JIRA_QA_TESTER_FIELD", "customfield_10111")
 JIRA_HEADERS = {
     "Authorization": f"Basic {base64.b64encode(f'{JIRA_EMAIL}:{JIRA_API_TOKEN}'.encode()).decode()}",
     "Content-Type": "application/json"

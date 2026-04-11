@@ -250,17 +250,6 @@ def get_jira_issue(ticket: str):
 
     return response.json()
 
-def get_jira_issue(ticket: str):
-
-    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket}"
-
-    response = requests.get(url, headers=JIRA_HEADERS)
-
-    if response.status_code != 200:
-        raise Exception(f"Unable to fetch Jira issue {ticket}")
-
-    return response.json()
-
 def get_qa_tester_account_id(ticket: str):
 
     issue = get_jira_issue(ticket)
