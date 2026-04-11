@@ -47,6 +47,13 @@
                 "url": "https://yourdomain.com/slack/standup",
                 "description": "Allow users to request their standup draft",
                 "should_escape": false
+            },
+            {
+                "command": "/createprodpr",
+                "url": "https://yourdomain.com/slack/createprodpr",
+                "description": "Create PROD PRs from DEV PRs linked to a Jira ticket",
+                "usage_hint": "<TICKET-ID>",
+                "should_escape": false
             }
         ]
     },

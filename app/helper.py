@@ -112,17 +112,28 @@ def fetch_recent_jira_updates() -> List[str]:
 
 def get_repo_branches(repo: str) -> List[str]:
     """
-    Fetch all branches for a repository.
+    Fetch all branches for a repository, handling pagination.
     """
 
     url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/branches"
+    all_branches: List[str] = []
+    page = 1
 
-    response = requests.get(url, headers=GITHUB_HEADERS)
+    while True:
+        response = requests.get(url, headers=GITHUB_HEADERS, params={"per_page": 100, "page": page})
 
-    if response.status_code != 200:
-        raise Exception(f"Unable to fetch branches: {response.text}")
+        if response.status_code != 200:
+            raise Exception(f"Unable to fetch branches: {response.text}")
 
-    return [branch["name"] for branch in response.json()]
+        branches = response.json()
+
+        if not branches:
+            break
+
+        all_branches.extend(branch["name"] for branch in branches)
+        page += 1
+
+    return all_branches
 
 def detect_dev_branch(branches: List[str]) -> str:
     """
@@ -182,7 +193,7 @@ def create_pull_request(repo: str, feature_branch: str, dev_branch: str, jira_ti
         "title": f"[{jira_ticket}] Merge {feature_branch} into {dev_branch}",
         "head": feature_branch,
         "base": dev_branch,
-        "body": f"Auto-created PR for Jira ticket {jira_ticket}"
+        "body": f"Jira ticket: {jira_ticket}"
     }
 
     response = requests.post(url, headers=GITHUB_HEADERS, json=payload)
@@ -315,3 +326,309 @@ def get_jira_issue_status(ticket: str) -> str:
     issue = get_jira_issue(ticket)
 
     return issue["fields"]["status"]["name"]
+
+def get_jira_remote_links(ticket: str) -> List[Dict[str, Any]]:
+    """
+    Returns all remote links attached to a Jira ticket.
+    """
+
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket}/remotelink"
+
+    response = requests.get(url, headers=JIRA_HEADERS)
+
+    if response.status_code != 200:
+        raise Exception(f"Failed to fetch remote links for {ticket}: {response.text}")
+
+    return response.json()
+
+def get_dev_pr_links(ticket: str) -> List[Dict[str, Any]]:
+    """
+    Returns DEV PR links from a Jira ticket's remote links.
+    Each item has: url, title, repo.
+    """
+
+    links = get_jira_remote_links(ticket)
+
+    dev_links = []
+
+    for link in links:
+        obj = link.get("object", {})
+        title = obj.get("title", "")
+        url = obj.get("url", "")
+
+        if title.endswith("(DEV)") and url:
+            repo = title[: -len("(DEV)")].strip()
+            dev_links.append({"url": url, "title": title, "repo": repo})
+
+    return dev_links
+
+def get_pr_number_from_url(pr_url: str) -> int:
+    """
+    Extracts PR number from a GitHub PR URL.
+    e.g. https://github.com/{org}/{repo}/pull/42 -> 42
+    """
+
+    parts = pr_url.rstrip("/").split("/")
+    return int(parts[-1])
+
+def get_pr_commits(repo: str, pr_number: int) -> List[Dict[str, Any]]:
+    """
+    Returns commit list for a given PR (sha + first line of message).
+    """
+
+    url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/pulls/{pr_number}/commits"
+
+    response = requests.get(url, headers=GITHUB_HEADERS)
+
+    if response.status_code != 200:
+        return []
+
+    return response.json()
+
+def get_pr_head_sha(repo: str, pr_number: int) -> str:
+    """
+    Returns the HEAD commit SHA of the PR's source branch.
+    Used to create the PROD branch at the same point as the feature branch
+    so the resulting PR against prod is not empty.
+    """
+
+    url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/pulls/{pr_number}"
+
+    response = requests.get(url, headers=GITHUB_HEADERS)
+
+    if response.status_code != 200:
+        raise Exception(f"Failed to fetch PR #{pr_number} in `{repo}`: {response.text}")
+
+    return response.json()["head"]["sha"]
+
+def detect_prod_branch(branches: List[str]) -> str:
+    """
+    Detects the production branch using priority: prod > production > master > main.
+    """
+
+    branch_set = set(branches)
+
+    for branch in ["prod", "production", "master"]:
+        if branch in branch_set:
+            return branch
+
+    raise Exception(f"Unable to determine prod branch from branches: {branches}")
+
+def get_branch_sha(repo: str, branch: str) -> str:
+    """
+    Returns the HEAD commit SHA of a branch.
+    """
+
+    url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/branches/{branch}"
+
+    response = requests.get(url, headers=GITHUB_HEADERS)
+
+    if response.status_code != 200:
+        raise Exception(f"Failed to fetch branch `{branch}` in `{repo}`: {response.text}")
+
+    return response.json()["commit"]["sha"]
+
+def create_branch(repo: str, branch_name: str, sha: str) -> None:
+    """
+    Creates a new branch pointing at the given commit SHA.
+    Raises if the branch already exists or the API call fails.
+    """
+
+    url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/git/refs"
+
+    payload = {
+        "ref": f"refs/heads/{branch_name}",
+        "sha": sha
+    }
+
+    response = requests.post(url, headers=GITHUB_HEADERS, json=payload)
+
+    if response.status_code == 422:
+        raise Exception(f"Branch `{branch_name}` already exists in `{repo}`.")
+
+    if response.status_code not in [200, 201]:
+        raise Exception(f"Failed to create branch `{branch_name}`: {response.text}")
+
+def create_prod_pull_request(
+    repo: str,
+    prod_branch_name: str,
+    target_prod_branch: str,
+    jira_ticket: str,
+    commit_refs: List[tuple]
+) -> Dict[str, Any]:
+    """
+    Creates a PROD PR. commit_refs is a list of (sha, message) tuples from the DEV PR.
+    """
+
+    url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/pulls"
+
+    if commit_refs:
+        commit_list = "\n".join(f"- `{sha[:7]}` {msg}" for sha, msg in commit_refs)
+        body = f"Jira ticket: {jira_ticket}\n\n**Cherry-picked commits from DEV PR:**\n{commit_list}"
+    else:
+        body = f"Jira ticket: {jira_ticket}"
+
+    payload = {
+        "title": f"[{jira_ticket}] PROD - Merge {prod_branch_name} into {target_prod_branch}",
+        "head": prod_branch_name,
+        "base": target_prod_branch,
+        "body": body
+    }
+
+    response = requests.post(url, headers=GITHUB_HEADERS, json=payload)
+
+    if response.status_code not in [200, 201]:
+        raise Exception(f"GitHub PROD PR creation failed: {response.text}")
+
+    return response.json()
+
+def update_pull_request_body(repo: str, pr_number: int, body: str) -> None:
+    """
+    Updates the body of an existing pull request.
+    """
+
+    url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/pulls/{pr_number}"
+
+    response = requests.patch(url, headers=GITHUB_HEADERS, json={"body": body})
+
+    if response.status_code not in (200, 201):
+        raise Exception(f"Failed to update PR #{pr_number} body: {response.text}")
+
+def cherry_pick_commits_onto_branch(
+    repo: str,
+    commits: List[Dict[str, Any]],
+    branch_name: str,
+) -> int:
+    """
+    Cherry-picks a list of commits (output of get_pr_commits) onto branch_name.
+
+    For each non-merge commit:
+      1. Compare the commit to its parent to get the exact file changes.
+      2. Apply those changes on top of the PROD branch's current tree.
+      3. Create a new commit and advance the branch ref.
+
+    Skips merge commits (>1 parent). Returns the number of commits picked.
+    """
+
+    picked = 0
+
+    for commit in commits:
+        commit_sha = commit["sha"]
+        parents = commit.get("parents", [])
+
+        # Skip merge commits — they bring in unrelated branch history
+        if len(parents) != 1:
+            continue
+
+        parent_sha = parents[0]["sha"]
+        commit_message = commit["commit"]["message"]
+
+        # 1. Get file-level diff between parent and this commit
+        compare_url = (
+            f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}"
+            f"/compare/{parent_sha}...{commit_sha}"
+        )
+        compare_resp = requests.get(compare_url, headers=GITHUB_HEADERS)
+        if compare_resp.status_code != 200:
+            raise Exception(
+                f"Failed to compare {parent_sha[:7]}...{commit_sha[:7]}: {compare_resp.text}"
+            )
+        files = compare_resp.json().get("files", [])
+
+        if not files:
+            continue
+
+        # 2. Get current PROD branch HEAD and its tree
+        branch_url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/branches/{branch_name}"
+        branch_resp = requests.get(branch_url, headers=GITHUB_HEADERS)
+        if branch_resp.status_code != 200:
+            raise Exception(f"Failed to read branch `{branch_name}`: {branch_resp.text}")
+        branch_data = branch_resp.json()
+        current_head_sha = branch_data["commit"]["sha"]
+        current_tree_sha = branch_data["commit"]["commit"]["tree"]["sha"]
+
+        # 3. Build tree entries — apply the diff to the PROD branch tree
+        tree_entries = []
+        for f in files:
+            path = f["filename"]
+            status = f["status"]
+
+            if status == "removed":
+                # sha=None deletes the file from the tree
+                tree_entries.append({"path": path, "mode": "100644", "type": "blob", "sha": None})
+
+            elif status in ("added", "modified"):
+                blob_sha = f.get("sha")
+                if blob_sha:
+                    tree_entries.append({"path": path, "mode": "100644", "type": "blob", "sha": blob_sha})
+
+            elif status == "renamed":
+                prev = f.get("previous_filename")
+                blob_sha = f.get("sha")
+                if prev:
+                    tree_entries.append({"path": prev, "mode": "100644", "type": "blob", "sha": None})
+                if blob_sha:
+                    tree_entries.append({"path": path, "mode": "100644", "type": "blob", "sha": blob_sha})
+
+        if not tree_entries:
+            continue
+
+        # 4. Create a new tree rooted at the PROD branch's current tree + changes
+        tree_resp = requests.post(
+            f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/git/trees",
+            headers=GITHUB_HEADERS,
+            json={"base_tree": current_tree_sha, "tree": tree_entries},
+        )
+        if tree_resp.status_code not in (200, 201):
+            raise Exception(
+                f"Failed to create tree for commit {commit_sha[:7]}: {tree_resp.text}"
+            )
+        new_tree_sha = tree_resp.json()["sha"]
+
+        # 5. Create a new commit on top of the PROD branch
+        new_commit_resp = requests.post(
+            f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/git/commits",
+            headers=GITHUB_HEADERS,
+            json={
+                "message": f"{commit_message}\n\n(cherry picked from commit {commit_sha[:7]})",
+                "tree": new_tree_sha,
+                "parents": [current_head_sha],
+            },
+        )
+        if new_commit_resp.status_code not in (200, 201):
+            raise Exception(f"Failed to create commit: {new_commit_resp.text}")
+        new_commit_sha = new_commit_resp.json()["sha"]
+
+        # 6. Advance the PROD branch ref to the new commit
+        ref_resp = requests.patch(
+            f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/git/refs/heads/{branch_name}",
+            headers=GITHUB_HEADERS,
+            json={"sha": new_commit_sha},
+        )
+        if ref_resp.status_code not in (200, 201):
+            raise Exception(
+                f"Failed to update branch ref after commit {commit_sha[:7]}: {ref_resp.text}"
+            )
+
+        picked += 1
+
+    return picked
+
+def add_jira_prod_pr_link(ticket: str, pr_url: str, repo: str) -> None:
+    """
+    Adds a PROD PR web link to a Jira ticket.
+    """
+
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket}/remotelink"
+
+    payload = {
+        "object": {
+            "url": pr_url,
+            "title": f"{repo} (PROD)"
+        }
+    }
+
+    response = requests.post(url, headers=JIRA_HEADERS, json=payload)
+
+    if response.status_code not in [200, 201]:
+        raise Exception(f"Failed to add Jira PROD link: {response.text}")

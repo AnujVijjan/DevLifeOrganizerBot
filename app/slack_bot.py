@@ -5,12 +5,13 @@ from typing import List, Tuple, Dict, Any
 from .models import get_tasks_from_db
 import sqlite3
 from .helper import (
-    fetch_filtered_repositories, 
-    fetch_pull_requests, 
-    fetch_recent_commits, 
+    fetch_filtered_repositories,
+    fetch_pull_requests,
+    fetch_recent_commits,
     fetch_recent_jira_updates,
     get_repo_branches,
     detect_dev_branch,
+    detect_prod_branch,
     validate_branch_exists,
     get_existing_pr,
     jira_weblink_exists,
@@ -20,7 +21,16 @@ from .helper import (
     get_qa_tester_account_id,
     assign_jira_issue,
     get_jira_transitions,
-    transition_jira_issue
+    transition_jira_issue,
+    get_dev_pr_links,
+    get_pr_number_from_url,
+    get_pr_commits,
+    get_branch_sha,
+    create_branch,
+    cherry_pick_commits_onto_branch,
+    update_pull_request_body,
+    create_prod_pull_request,
+    add_jira_prod_pr_link,
 )
 from .constants import *
 
@@ -341,5 +351,157 @@ def handle_create_pr(jira_ticket: str, feature_branch: str, repo_name: str) -> N
         send_message_to_slack(
             client,
             f"PR automation failed: {str(e)}",
+            SLACK_CHANNEL
+        )
+
+
+def handle_create_prod_pr(jira_ticket: str) -> None:
+    """
+    For a given Jira ticket, reads every open DEV PR link, then for each repo:
+      1. Fetches commits from the DEV PR (for reference in the PR body).
+      2. Detects the prod branch.
+      3. Creates a branch named '{ticket-id}-Prod' from prod's HEAD.
+      4. Opens a PROD PR from that branch into the prod branch.
+      5. Adds the PROD PR link back to the Jira ticket.
+    """
+
+    try:
+
+        ticket_link = f"<{JIRA_BASE_URL}/browse/{jira_ticket}|{jira_ticket}>"
+
+        dev_links = get_dev_pr_links(jira_ticket)
+
+        if not dev_links:
+            send_message_to_slack(
+                client,
+                f"No DEV PR links found on ticket {ticket_link}. Add DEV PRs first via `/createpr`.",
+                SLACK_CHANNEL
+            )
+            return
+
+        prod_branch_name = f"{jira_ticket}-Prod"
+        results = []
+
+        for link in dev_links:
+
+            repo = link["repo"]
+            dev_pr_url = link["url"]
+
+            try:
+
+                pr_number = get_pr_number_from_url(dev_pr_url)
+
+                # Collect commit references from the DEV PR for the PROD PR body
+                raw_commits = get_pr_commits(repo, pr_number)
+                commit_refs = [
+                    (c["sha"], c["commit"]["message"].split("\n")[0])
+                    for c in raw_commits
+                ]
+
+                branches = get_repo_branches(repo)
+                prod_branch = detect_prod_branch(branches)
+
+                # Create PROD branch from production's HEAD (clean base, no dev-only commits)
+                prod_head_sha = get_branch_sha(repo, prod_branch)
+
+                branch_created = False
+                try:
+                    create_branch(repo, prod_branch_name, prod_head_sha)
+                    branch_created = True
+                except Exception as branch_err:
+                    if "already exists" not in str(branch_err):
+                        raise
+
+                # Cherry-pick each DEV commit onto the PROD branch
+                picked = cherry_pick_commits_onto_branch(repo, raw_commits, prod_branch_name)
+
+                # Check for an existing open PROD PR before creating one
+                existing_pr = get_existing_pr(repo, prod_branch_name, prod_branch)
+
+                if existing_pr:
+                    prod_pr_url = existing_pr["html_url"]
+                    pr_created = False
+                    # Refresh the PR body with the latest cherry-picked commit list
+                    if commit_refs:
+                        updated_body = (
+                            f"Jira ticket: {jira_ticket}\n\n"
+                            f"**Cherry-picked commits from DEV PR:**\n"
+                            + "\n".join(f"- `{sha[:7]}` {msg}" for sha, msg in commit_refs)
+                        )
+                        update_pull_request_body(repo, existing_pr["number"], updated_body)
+                else:
+                    prod_pr = create_prod_pull_request(
+                        repo=repo,
+                        prod_branch_name=prod_branch_name,
+                        target_prod_branch=prod_branch,
+                        jira_ticket=jira_ticket,
+                        commit_refs=commit_refs
+                    )
+                    prod_pr_url = prod_pr["html_url"]
+                    pr_created = True
+
+                jira_link_added = False
+                if not jira_weblink_exists(jira_ticket, prod_pr_url):
+                    add_jira_prod_pr_link(jira_ticket, prod_pr_url, repo)
+                    jira_link_added = True
+
+                results.append({
+                    "repo": repo,
+                    "prod_branch": prod_branch,
+                    "prod_pr_url": prod_pr_url,
+                    "branch_created": branch_created,
+                    "pr_created": pr_created,
+                    "jira_link_added": jira_link_added,
+                    "commits_picked": picked,
+                    "error": None
+                })
+
+            except Exception as repo_err:
+                results.append({"repo": repo, "error": str(repo_err)})
+
+        # Build the Slack summary
+        message = [
+            "*PROD PR Automation Result*",
+            "",
+            f"*Ticket:* {ticket_link}",
+            f"*DEV PRs processed:* {len(dev_links)}",
+            ""
+        ]
+
+        for r in results:
+            if r["error"]:
+                message.append(f"*{r['repo']}:* Failed — {r['error']}")
+            else:
+                bullets = []
+
+                if r["branch_created"]:
+                    bullets.append(f"Branch `{prod_branch_name}` created from `{r['prod_branch']}`.")
+                else:
+                    bullets.append(f"Branch `{prod_branch_name}` already existed.")
+
+                if r["pr_created"]:
+                    bullets.append(f"PROD PR created: {r['prod_pr_url']}")
+                else:
+                    bullets.append(f"PROD PR already existed: {r['prod_pr_url']}")
+
+                if r["jira_link_added"]:
+                    bullets.append("Jira PROD link added.")
+                else:
+                    bullets.append("Jira PROD link already existed.")
+
+                bullets.append(f"Commits cherry-picked: {r['commits_picked']}")
+
+                message.append(f"*{r['repo']}:*")
+                message.extend([f"  • {b}" for b in bullets])
+
+            message.append("")
+
+        send_message_to_slack(client, "\n".join(message), SLACK_CHANNEL)
+
+    except Exception as e:
+
+        send_message_to_slack(
+            client,
+            f"PROD PR automation failed: {str(e)}",
             SLACK_CHANNEL
         )

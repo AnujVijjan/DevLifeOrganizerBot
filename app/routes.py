@@ -164,6 +164,48 @@ def send_standup_update() -> Dict[str, Any]:
         "text": "⏳ Generating your standup report... Please wait a moment."
     })
 
+@app_routes.route("/slack/createprodpr", methods=["POST"])
+def create_prod_pr() -> Dict[str, Any]:
+    """
+    Slack command:
+    /createprodpr TICKET-123
+
+    Reads DEV PR links from the Jira ticket, creates a '{ticket-id}-Prod' branch
+    from each repo's prod branch, opens a PROD PR, and links it back to the ticket.
+    """
+
+    data = request.form
+    text = data.get("text", "").strip()
+
+    if not text:
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": "Usage: `/createprodpr TICKET-123`"
+        })
+
+    parts = text.split()
+
+    if len(parts) != 1:
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": "Usage: `/createprodpr TICKET-123`"
+        })
+
+    jira_ticket = parts[0]
+
+    from .slack_bot import handle_create_prod_pr
+
+    threading.Thread(
+        target=handle_create_prod_pr,
+        args=(jira_ticket,)
+    ).start()
+
+    return jsonify({
+        "response_type": "ephemeral",
+        "text": "Creating PROD PRs... please wait ⏳"
+    })
+
+
 @app_routes.route("/slack/createpr", methods=["POST"])
 def create_pr() -> Dict[str, Any]:
     """
