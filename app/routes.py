@@ -223,14 +223,16 @@ def create_pr() -> Dict[str, Any]:
         })
 
     parts = text.split()
+    move_to_review = "--no-transition" not in parts
+    positional = [p for p in parts if not p.startswith("--")]
 
-    if len(parts) != 3:
+    if len(positional) != 3:
         return jsonify({
             "response_type": "ephemeral",
-            "text": "Usage: `/createpr TICKET-123 feature-branch repo-name`"
+            "text": "Usage: `/createpr TICKET-123 feature-branch repo-name [--no-transition]`"
         })
 
-    jira_ticket, feature_branch, repo_name = parts
+    jira_ticket, feature_branch, repo_name = positional
 
     from .slack_bot import handle_create_pr
     import threading
@@ -238,7 +240,7 @@ def create_pr() -> Dict[str, Any]:
     # Run PR creation in background thread
     threading.Thread(
         target=handle_create_pr,
-        args=(jira_ticket, feature_branch, repo_name)
+        args=(jira_ticket, feature_branch, repo_name, move_to_review)
     ).start()
 
     # Immediate response to Slack

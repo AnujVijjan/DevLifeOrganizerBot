@@ -219,7 +219,7 @@ def async_generate_standup() -> None:
     send_message_to_slack(client, standup_report, SLACK_CHANNEL)
 
 
-def handle_create_pr(jira_ticket: str, feature_branch: str, repo_name: str) -> None:
+def handle_create_pr(jira_ticket: str, feature_branch: str, repo_name: str, move_to_review: bool = True) -> None:
     """
     Creates PR and manages Jira automation.
     """
@@ -275,7 +275,7 @@ def handle_create_pr(jira_ticket: str, feature_branch: str, repo_name: str) -> N
 
         current_status = get_jira_issue_status(jira_ticket)
 
-        if current_status == JIRA_STATUS_IN_PROGRESS:
+        if move_to_review:
 
             transitions = get_jira_transitions(jira_ticket)
 
@@ -335,7 +335,7 @@ def handle_create_pr(jira_ticket: str, feature_branch: str, repo_name: str) -> N
         if ticket_assigned:
             message.append("• Ticket assigned to QA tester.")
 
-        if current_status != JIRA_STATUS_IN_PROGRESS:
+        if move_to_review and not ticket_moved:
             message.append(
                 f"• Ticket status is `{current_status}`, so no workflow change was performed."
             )

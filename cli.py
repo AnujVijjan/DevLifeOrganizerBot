@@ -159,6 +159,7 @@ def cmd_createpr(args: argparse.Namespace) -> None:
     jira_ticket = args.ticket
     feature_branch = args.feature_branch
     repo_name = args.repo
+    move_to_review = not args.no_transition
 
     _section(f"Creating DEV PR — {jira_ticket} / {repo_name}")
 
@@ -204,7 +205,7 @@ def cmd_createpr(args: argparse.Namespace) -> None:
         current_status = get_jira_issue_status(jira_ticket)
         _info(f"Jira ticket status: {current_status}")
 
-        if current_status == JIRA_STATUS_IN_PROGRESS:
+        if move_to_review:
             transitions = get_jira_transitions(jira_ticket)
             code_review_transition = next(
                 (t for t in transitions if t["name"].lower() == JIRA_STATUS_CODE_REVIEW.lower()),
@@ -220,8 +221,8 @@ def cmd_createpr(args: argparse.Namespace) -> None:
                 assign_jira_issue(jira_ticket, qa_account_id)
                 ticket_assigned = True
                 _ok("Ticket assigned to QA tester.")
-        else:
-            _info(f"Status is '{current_status}' — no workflow change performed.")
+            else:
+                _info(f"Status is '{current_status}' — no workflow change performed.")
 
         print()
         print(f"  Ticket:         {JIRA_BASE_URL}/browse/{jira_ticket}")
@@ -387,6 +388,7 @@ def main() -> None:
     p.add_argument("ticket", help="Jira ticket ID, e.g. CAH-123")
     p.add_argument("feature_branch", help="Feature branch name")
     p.add_argument("repo", help="Repository name")
+    p.add_argument("--no-transition", action="store_true", help="Skip moving the Jira ticket to CodeReview")
     p.set_defaults(func=cmd_createpr)
 
     # createprodpr
