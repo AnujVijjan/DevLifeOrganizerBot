@@ -52,7 +52,7 @@
                 "command": "/createprodpr",
                 "url": "https://yourdomain.com/slack/createprodpr",
                 "description": "Create PROD PRs from DEV PRs linked to a Jira ticket",
-                "usage_hint": "<TICKET-ID>",
+                "usage_hint": "<TICKET-ID> [feature-branch]",
                 "should_escape": false
             }
         ]

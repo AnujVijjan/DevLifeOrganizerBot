@@ -10,8 +10,10 @@ Usage
   python cli.py deepworkon 60
   python cli.py deepworkoff
   python cli.py standup
-  python cli.py createpr  CAH-123 feature-branch repo-name
+  python cli.py createpr CAH-123 repo-name
+  python cli.py createpr CAH-123 feature-branch repo-name
   python cli.py createprodpr CAH-123
+  python cli.py createprodpr CAH-123 feature-branch
 """
 
 import argparse
@@ -157,7 +159,7 @@ def cmd_standup(args: argparse.Namespace) -> None:
 
 def cmd_createpr(args: argparse.Namespace) -> None:
     jira_ticket = args.ticket
-    feature_branch = args.feature_branch
+    feature_branch = args.feature_branch or jira_ticket
     repo_name = args.repo
     move_to_review = not args.no_transition
 
@@ -245,6 +247,7 @@ def cmd_createpr(args: argparse.Namespace) -> None:
 
 def cmd_createprodpr(args: argparse.Namespace) -> None:
     jira_ticket = args.ticket
+    feature_branch = args.feature_branch or jira_ticket
 
     _section(f"Creating PROD PRs — {jira_ticket}")
 
@@ -260,7 +263,7 @@ def cmd_createprodpr(args: argparse.Namespace) -> None:
 
         _info(f"DEV PR links found: {len(dev_links)}")
 
-        prod_branch_name = f"{jira_ticket}-Prod"
+        prod_branch_name = f"{feature_branch}-Prod"
 
         for link in dev_links:
             repo = link["repo"]
@@ -386,7 +389,7 @@ def main() -> None:
     # createpr
     p = subparsers.add_parser("createpr", help="Create a DEV PR and link it to a Jira ticket")
     p.add_argument("ticket", help="Jira ticket ID, e.g. CAH-123")
-    p.add_argument("feature_branch", help="Feature branch name")
+    p.add_argument("feature_branch", nargs="?", help="Feature branch name (defaults to the Jira ticket ID)")
     p.add_argument("repo", help="Repository name")
     p.add_argument("--no-transition", action="store_true", help="Skip moving the Jira ticket to CodeReview")
     p.set_defaults(func=cmd_createpr)
@@ -394,6 +397,7 @@ def main() -> None:
     # createprodpr
     p = subparsers.add_parser("createprodpr", help="Create PROD PRs from DEV PRs on a Jira ticket")
     p.add_argument("ticket", help="Jira ticket ID, e.g. CAH-123")
+    p.add_argument("feature_branch", nargs="?", help="Feature branch name used to derive the PROD branch name (defaults to the Jira ticket ID)")
     p.set_defaults(func=cmd_createprodpr)
 
     args = parser.parse_args()

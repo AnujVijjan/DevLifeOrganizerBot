@@ -1,3 +1,4 @@
+import re
 import requests
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
@@ -496,8 +497,25 @@ def cherry_pick_commits_onto_branch(
       2. Apply those changes on top of the PROD branch's current tree.
       3. Create a new commit and advance the branch ref.
 
-    Skips merge commits (>1 parent). Returns the number of commits picked.
+    Skips merge commits (>1 parent) and commits already cherry-picked onto the
+    branch (detected via the "(cherry picked from commit XXXXXXX)" marker).
+    Returns the number of commits picked.
     """
+
+    # Build a set of source SHAs (7-char) already on the branch so we can skip
+    # commits that were cherry-picked in a previous run.
+    already_picked: set[str] = set()
+    existing_commits_resp = requests.get(
+        f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/commits",
+        headers=GITHUB_HEADERS,
+        params={"sha": branch_name, "per_page": 100},
+    )
+    if existing_commits_resp.status_code == 200:
+        _marker = re.compile(r"\(cherry picked from commit ([0-9a-f]{7})\)")
+        for ec in existing_commits_resp.json():
+            msg = ec.get("commit", {}).get("message", "")
+            for m in _marker.findall(msg):
+                already_picked.add(m)
 
     picked = 0
 
@@ -507,6 +525,10 @@ def cherry_pick_commits_onto_branch(
 
         # Skip merge commits — they bring in unrelated branch history
         if len(parents) != 1:
+            continue
+
+        # Skip commits already cherry-picked onto this branch
+        if commit_sha[:7] in already_picked:
             continue
 
         parent_sha = parents[0]["sha"]

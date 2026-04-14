@@ -12,8 +12,8 @@ A Slack bot that automates the repetitive parts of a developer's day — task tr
 - `/marktaskdone <task_id>` — Mark a task as complete
 
 ### PR Automation
-- `/createpr <TICKET-ID> <feature-branch> <repo>` — Creates a PR from your feature branch into the detected dev branch, adds the PR link to the Jira ticket, and transitions the ticket to CodeReview
-- `/createprodpr <TICKET-ID>` — Reads all DEV PR links from the Jira ticket, cherry-picks their commits onto a clean PROD branch, opens a PROD PR per repo, and links it back to the ticket
+- `/createpr <TICKET-ID> [feature-branch] <repo>` — Creates a PR from your feature branch into the detected dev branch, defaulting the feature branch to the ticket ID when omitted, adds the PR link to the Jira ticket, and transitions the ticket to CodeReview
+- `/createprodpr <TICKET-ID> [feature-branch]` — Reads all DEV PR links from the Jira ticket, cherry-picks their commits onto a clean PROD branch named from the feature branch or ticket ID, opens a PROD PR per repo, and links it back to the ticket
 
 ### Standup Report
 - `/standup` — Generates a standup draft from your GitHub commits and Jira updates from the past 24 hours
@@ -33,14 +33,15 @@ A Slack bot that automates the repetitive parts of a developer's day — task tr
 
 ### DEV PR (`/createpr`)
 1. Detects the dev branch of the repo (`develop` → `dev` → `main` → `master`)
-2. Creates a PR from your feature branch into the dev branch (or reuses an existing open one)
-3. Adds the PR link to the Jira ticket as a web link
-4. If the ticket is "In Progress", transitions it to CodeReview and assigns it to the QA tester
+2. Uses the provided feature branch, or defaults to the ticket ID if none is provided
+3. Creates a PR from your feature branch into the dev branch (or reuses an existing open one)
+4. Adds the PR link to the Jira ticket as a web link
+5. If the ticket is "In Progress", transitions it to CodeReview and assigns it to the QA tester
 
 ### PROD PR (`/createprodpr`)
 1. Reads all `(DEV)` web links attached to the Jira ticket
 2. For each repo found, detects the prod branch (`prod` → `production` → `master`)
-3. Creates a `{TICKET-ID}-Prod` branch from the prod branch's HEAD
+3. Creates a `{feature-branch-or-ticket-ID}-Prod` branch from the prod branch's HEAD
 4. Cherry-picks the DEV PR commits onto the PROD branch via the GitHub Git Data API — no dev-only history brought along
 5. Opens a PROD PR with the cherry-picked commit list in the body
 6. Adds the PROD PR link to the Jira ticket
@@ -62,8 +63,10 @@ python cli.py deepworkoff
 
 python cli.py standup
 
+python cli.py createpr CAH-123 MyRepo
 python cli.py createpr CAH-123 my-feature-branch MyRepo
 python cli.py createprodpr CAH-123
+python cli.py createprodpr CAH-123 my-feature-branch
 ```
 
 ---

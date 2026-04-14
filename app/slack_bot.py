@@ -1,7 +1,7 @@
 import requests
 from slack_sdk import WebClient
 from datetime import datetime, timedelta
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 from .models import get_tasks_from_db
 import sqlite3
 from .helper import (
@@ -219,13 +219,18 @@ def async_generate_standup() -> None:
     send_message_to_slack(client, standup_report, SLACK_CHANNEL)
 
 
-def handle_create_pr(jira_ticket: str, feature_branch: str, repo_name: str, move_to_review: bool = True) -> None:
+def handle_create_pr(
+    jira_ticket: str,
+    repo_name: str,
+    feature_branch: Optional[str] = None,
+    move_to_review: bool = True,
+) -> None:
     """
     Creates PR and manages Jira automation.
     """
 
     try:
-
+        feature_branch = feature_branch or jira_ticket
         ticket_link = f"<{JIRA_BASE_URL}/browse/{jira_ticket}|{jira_ticket}>"
 
         pr_created = False
@@ -355,18 +360,18 @@ def handle_create_pr(jira_ticket: str, feature_branch: str, repo_name: str, move
         )
 
 
-def handle_create_prod_pr(jira_ticket: str) -> None:
+def handle_create_prod_pr(jira_ticket: str, feature_branch: Optional[str] = None) -> None:
     """
     For a given Jira ticket, reads every open DEV PR link, then for each repo:
       1. Fetches commits from the DEV PR (for reference in the PR body).
       2. Detects the prod branch.
-      3. Creates a branch named '{ticket-id}-Prod' from prod's HEAD.
+      3. Creates a branch named '{feature-branch-or-ticket-id}-Prod' from prod's HEAD.
       4. Opens a PROD PR from that branch into the prod branch.
       5. Adds the PROD PR link back to the Jira ticket.
     """
 
     try:
-
+        feature_branch = feature_branch or jira_ticket
         ticket_link = f"<{JIRA_BASE_URL}/browse/{jira_ticket}|{jira_ticket}>"
 
         dev_links = get_dev_pr_links(jira_ticket)
@@ -379,7 +384,7 @@ def handle_create_prod_pr(jira_ticket: str) -> None:
             )
             return
 
-        prod_branch_name = f"{jira_ticket}-Prod"
+        prod_branch_name = f"{feature_branch}-Prod"
         results = []
 
         for link in dev_links:
@@ -464,6 +469,7 @@ def handle_create_prod_pr(jira_ticket: str) -> None:
             "*PROD PR Automation Result*",
             "",
             f"*Ticket:* {ticket_link}",
+            f"*PROD Branch Name:* {prod_branch_name}",
             f"*DEV PRs processed:* {len(dev_links)}",
             ""
         ]
