@@ -1,13 +1,59 @@
 from flask import Blueprint, request, jsonify
 from .models import add_task_to_db, get_tasks_from_db, update_task_to_db
 from .slack_bot import handle_slack_mention, async_generate_standup
-from typing import Dict, Any
+from typing import Dict, Any, List, Set, Tuple
 from datetime import datetime, timedelta
 import sqlite3
 import threading
 from .constants import SLACK_USER_ID, DB_FILE
+from .helper import resolve_createpr_inputs, resolve_createprodpr_inputs
 
 app_routes = Blueprint('app_routes', __name__)
+
+CREATEPR_USAGE = "Usage: `/createpr TICKET-123 --repo repo-name [--branch feature-branch] [--no-transition]`"
+CREATEPRODPR_USAGE = "Usage: `/createprodpr TICKET-123 [--branch feature-branch] [--repo repo-name]`"
+
+def _parse_slack_command_parts(
+    parts: List[str],
+    value_flags: Set[str],
+    switch_flags: Set[str],
+) -> Tuple[List[str], Dict[str, str], Set[str]]:
+    positional: List[str] = []
+    options: Dict[str, str] = {}
+    switches: Set[str] = set()
+    i = 0
+
+    while i < len(parts):
+        part = parts[i]
+
+        if "=" in part:
+            flag, value = part.split("=", 1)
+            if flag in value_flags:
+                if flag in options or not value:
+                    raise ValueError("Duplicate or empty option value.")
+                options[flag] = value
+                i += 1
+                continue
+
+        if part in value_flags:
+            if part in options or i + 1 >= len(parts):
+                raise ValueError("Missing option value.")
+            options[part] = parts[i + 1]
+            i += 2
+            continue
+
+        if part in switch_flags:
+            switches.add(part)
+            i += 1
+            continue
+
+        if part.startswith("--"):
+            raise ValueError("Unknown option.")
+
+        positional.append(part)
+        i += 1
+
+    return positional, options, switches
 
 @app_routes.route("/slack/events", methods=["POST"])
 def slack_events() -> Dict[str, Any]:
@@ -168,7 +214,7 @@ def send_standup_update() -> Dict[str, Any]:
 def create_prod_pr() -> Dict[str, Any]:
     """
     Slack command:
-    /createprodpr TICKET-123 [feature-branch]
+    /createprodpr TICKET-123 [--branch feature-branch] [--repo repo-name]
 
     Reads DEV PR links from the Jira ticket, creates a '{feature-branch-or-ticket}-Prod'
     branch from each repo's prod branch, opens a PROD PR, and links it back to the ticket.
@@ -180,25 +226,36 @@ def create_prod_pr() -> Dict[str, Any]:
     if not text:
         return jsonify({
             "response_type": "ephemeral",
-            "text": "Usage: `/createprodpr TICKET-123 [feature-branch]`"
+            "text": CREATEPRODPR_USAGE
         })
 
-    parts = text.split()
+    try:
+        positional, options, _ = _parse_slack_command_parts(
+            text.split(),
+            value_flags={"--branch", "--repo"},
+            switch_flags=set(),
+        )
+        if not positional:
+            raise ValueError("Jira ticket is required.")
 
-    if len(parts) not in (1, 2):
+        jira_ticket = positional[0]
+        feature_branch, repo_name = resolve_createprodpr_inputs(
+            jira_ticket=jira_ticket,
+            legacy_args=positional[1:],
+            feature_branch=options.get("--branch"),
+            repo_name=options.get("--repo"),
+        )
+    except ValueError as e:
         return jsonify({
             "response_type": "ephemeral",
-            "text": "Usage: `/createprodpr TICKET-123 [feature-branch]`"
+            "text": f"{str(e)}\n{CREATEPRODPR_USAGE}"
         })
-
-    jira_ticket = parts[0]
-    feature_branch = parts[1] if len(parts) == 2 else None
 
     from .slack_bot import handle_create_prod_pr
 
     threading.Thread(
         target=handle_create_prod_pr,
-        args=(jira_ticket, feature_branch)
+        args=(jira_ticket, feature_branch, repo_name)
     ).start()
 
     return jsonify({
@@ -211,7 +268,7 @@ def create_prod_pr() -> Dict[str, Any]:
 def create_pr() -> Dict[str, Any]:
     """
     Slack command:
-    /createpr TICKET-123 [feature-branch] repo-name [--no-transition]
+    /createpr TICKET-123 --repo repo-name [--branch feature-branch] [--no-transition]
     """
 
     data = request.form
@@ -220,29 +277,33 @@ def create_pr() -> Dict[str, Any]:
     if not text:
         return jsonify({
             "response_type": "ephemeral",
-            "text": "Usage: `/createpr TICKET-123 [feature-branch] repo-name [--no-transition]`"
+            "text": CREATEPR_USAGE
         })
 
-    parts = text.split()
-    move_to_review = "--no-transition" not in parts
-    positional = [p for p in parts if not p.startswith("--")]
+    try:
+        positional, options, switches = _parse_slack_command_parts(
+            text.split(),
+            value_flags={"--branch", "--repo"},
+            switch_flags={"--no-transition"},
+        )
+        if not positional:
+            raise ValueError("Jira ticket is required.")
 
-    if len(positional) not in (2, 3):
+        jira_ticket = positional[0]
+        feature_branch, repo_name = resolve_createpr_inputs(
+            jira_ticket=jira_ticket,
+            legacy_args=positional[1:],
+            feature_branch=options.get("--branch"),
+            repo_name=options.get("--repo"),
+        )
+        move_to_review = "--no-transition" not in switches
+    except ValueError as e:
         return jsonify({
             "response_type": "ephemeral",
-            "text": "Usage: `/createpr TICKET-123 [feature-branch] repo-name [--no-transition]`"
+            "text": f"{str(e)}\n{CREATEPR_USAGE}"
         })
 
-    jira_ticket = positional[0]
-    if len(positional) == 2:
-        feature_branch = None
-        repo_name = positional[1]
-    else:
-        feature_branch = positional[1]
-        repo_name = positional[2]
-
     from .slack_bot import handle_create_pr
-    import threading
 
     # Run PR creation in background thread
     threading.Thread(

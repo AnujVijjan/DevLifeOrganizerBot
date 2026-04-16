@@ -1,7 +1,7 @@
 import re
 import requests
 from datetime import datetime, timedelta
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 from .constants import *
 
 def fetch_filtered_repositories() -> List[str]:
@@ -351,6 +351,98 @@ def get_dev_pr_links(ticket: str) -> List[Dict[str, Any]]:
             dev_links.append({"url": url, "title": title, "repo": repo})
 
     return dev_links
+
+def filter_dev_pr_links(
+    dev_links: List[Dict[str, Any]],
+    repo: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Optionally narrows DEV PR links to a single repo using a case-insensitive match.
+    """
+
+    if not repo:
+        return dev_links
+
+    repo_name = repo.strip().lower()
+    return [link for link in dev_links if link.get("repo", "").lower() == repo_name]
+
+def resolve_createpr_inputs(
+    jira_ticket: str,
+    legacy_args: List[str],
+    feature_branch: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> Tuple[str, str]:
+    """
+    Resolves preferred flag-based inputs while keeping the legacy positional format valid.
+    Legacy forms:
+      createpr TICKET repo
+      createpr TICKET feature-branch repo
+    Preferred form:
+      createpr TICKET --repo repo [--branch feature-branch]
+    """
+
+    resolved_branch = feature_branch.strip() if feature_branch else None
+    resolved_repo = repo_name.strip() if repo_name else None
+    positional = [arg.strip() for arg in legacy_args if arg and arg.strip()]
+
+    if len(positional) > 2:
+        raise ValueError(
+            "Too many positional arguments. Use `createpr TICKET --repo REPO [--branch FEATURE]`."
+        )
+
+    if resolved_repo:
+        if len(positional) == 2:
+            raise ValueError("Repo was provided both positionally and with `--repo`.")
+        if len(positional) == 1:
+            if resolved_branch:
+                raise ValueError(
+                    "Do not mix legacy positional arguments with both `--branch` and `--repo`."
+                )
+            resolved_branch = positional[0]
+    else:
+        if not positional:
+            raise ValueError(
+                "Repository name is required. Use `--repo REPO` or the legacy positional form."
+            )
+        if len(positional) == 1:
+            resolved_repo = positional[0]
+        else:
+            if resolved_branch:
+                raise ValueError("Feature branch was provided both positionally and with `--branch`.")
+            resolved_branch = positional[0]
+            resolved_repo = positional[1]
+
+    return resolved_branch or jira_ticket, resolved_repo
+
+def resolve_createprodpr_inputs(
+    jira_ticket: str,
+    legacy_args: List[str],
+    feature_branch: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> Tuple[str, Optional[str]]:
+    """
+    Resolves preferred flag-based inputs while keeping the legacy positional feature branch valid.
+    Legacy form:
+      createprodpr TICKET [feature-branch]
+    Preferred form:
+      createprodpr TICKET [--branch feature-branch] [--repo repo]
+    """
+
+    resolved_branch = feature_branch.strip() if feature_branch else None
+    resolved_repo = repo_name.strip() if repo_name else None
+    positional = [arg.strip() for arg in legacy_args if arg and arg.strip()]
+
+    if len(positional) > 1:
+        raise ValueError(
+            "Too many positional arguments. Use `createprodpr TICKET [--branch FEATURE] [--repo REPO]`."
+        )
+
+    if positional:
+        if resolved_branch:
+            raise ValueError("Feature branch was provided both positionally and with `--branch`.")
+        resolved_branch = positional[0]
+
+    return resolved_branch or jira_ticket, resolved_repo
 
 def get_pr_number_from_url(pr_url: str) -> int:
     """

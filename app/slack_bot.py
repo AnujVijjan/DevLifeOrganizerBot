@@ -23,6 +23,7 @@ from .helper import (
     get_jira_transitions,
     transition_jira_issue,
     get_dev_pr_links,
+    filter_dev_pr_links,
     get_pr_number_from_url,
     get_pr_commits,
     get_branch_sha,
@@ -360,9 +361,13 @@ def handle_create_pr(
         )
 
 
-def handle_create_prod_pr(jira_ticket: str, feature_branch: Optional[str] = None) -> None:
+def handle_create_prod_pr(
+    jira_ticket: str,
+    feature_branch: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> None:
     """
-    For a given Jira ticket, reads every open DEV PR link, then for each repo:
+    For a given Jira ticket, reads the open DEV PR links (optionally filtered to one repo), then:
       1. Fetches commits from the DEV PR (for reference in the PR body).
       2. Detects the prod branch.
       3. Creates a branch named '{feature-branch-or-ticket-id}-Prod' from prod's HEAD.
@@ -383,6 +388,21 @@ def handle_create_prod_pr(jira_ticket: str, feature_branch: Optional[str] = None
                 SLACK_CHANNEL
             )
             return
+
+        if repo_name:
+            filtered_dev_links = filter_dev_pr_links(dev_links, repo_name)
+            if not filtered_dev_links:
+                available_repos = ", ".join(sorted({link["repo"] for link in dev_links}))
+                send_message_to_slack(
+                    client,
+                    (
+                        f"No DEV PR link found for repo `{repo_name}` on ticket {ticket_link}. "
+                        f"Available repos: {available_repos}"
+                    ),
+                    SLACK_CHANNEL
+                )
+                return
+            dev_links = filtered_dev_links
 
         prod_branch_name = f"{feature_branch}-Prod"
         results = []
@@ -470,6 +490,7 @@ def handle_create_prod_pr(jira_ticket: str, feature_branch: Optional[str] = None
             "",
             f"*Ticket:* {ticket_link}",
             f"*PROD Branch Name:* {prod_branch_name}",
+            f"*Repo Filter:* `{repo_name}`" if repo_name else "*Repo Filter:* All repos",
             f"*DEV PRs processed:* {len(dev_links)}",
             ""
         ]

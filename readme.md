@@ -12,8 +12,8 @@ A Slack bot that automates the repetitive parts of a developer's day — task tr
 - `/marktaskdone <task_id>` — Mark a task as complete
 
 ### PR Automation
-- `/createpr <TICKET-ID> [feature-branch] <repo>` — Creates a PR from your feature branch into the detected dev branch, defaulting the feature branch to the ticket ID when omitted, adds the PR link to the Jira ticket, and transitions the ticket to CodeReview
-- `/createprodpr <TICKET-ID> [feature-branch]` — Reads all DEV PR links from the Jira ticket, cherry-picks their commits onto a clean PROD branch named from the feature branch or ticket ID, opens a PROD PR per repo, and links it back to the ticket
+- `/createpr <TICKET-ID> --repo <repo> [--branch feature-branch] [--no-transition]` — Creates a PR from your feature branch into the detected dev branch, defaulting the feature branch to the ticket ID when omitted, adds the PR link to the Jira ticket, and transitions the ticket to CodeReview
+- `/createprodpr <TICKET-ID> [--branch feature-branch] [--repo repo-name]` — Reads DEV PR links from the Jira ticket, optionally narrows the run to one repo, cherry-picks the commits onto a clean PROD branch named from the feature branch or ticket ID, opens a PROD PR, and links it back to the ticket
 
 ### Standup Report
 - `/standup` — Generates a standup draft from your GitHub commits and Jira updates from the past 24 hours
@@ -63,11 +63,15 @@ python cli.py deepworkoff
 
 python cli.py standup
 
-python cli.py createpr CAH-123 MyRepo
-python cli.py createpr CAH-123 my-feature-branch MyRepo
+python cli.py createpr CAH-123 --repo MyRepo
+python cli.py createpr CAH-123 --repo MyRepo --branch my-feature-branch
 python cli.py createprodpr CAH-123
-python cli.py createprodpr CAH-123 my-feature-branch
+python cli.py createprodpr CAH-123 --branch my-feature-branch
+python cli.py createprodpr CAH-123 --repo MyRepo
+python cli.py createprodpr CAH-123 --branch my-feature-branch --repo MyRepo
 ```
+
+Legacy positional syntax is still accepted for `createpr` and `createprodpr` so existing habits keep working.
 
 ---
 

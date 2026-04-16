@@ -10,10 +10,12 @@ Usage
   python cli.py deepworkon 60
   python cli.py deepworkoff
   python cli.py standup
-  python cli.py createpr CAH-123 repo-name
-  python cli.py createpr CAH-123 feature-branch repo-name
+  python cli.py createpr CAH-123 --repo repo-name
+  python cli.py createpr CAH-123 --repo repo-name --branch feature-branch
   python cli.py createprodpr CAH-123
-  python cli.py createprodpr CAH-123 feature-branch
+  python cli.py createprodpr CAH-123 --branch feature-branch
+  python cli.py createprodpr CAH-123 --repo repo-name
+  python cli.py createprodpr CAH-123 --branch feature-branch --repo repo-name
 """
 
 import argparse
@@ -49,6 +51,9 @@ from app.helper import (
     # PROD PR helpers
     detect_prod_branch,
     get_dev_pr_links,
+    filter_dev_pr_links,
+    resolve_createpr_inputs,
+    resolve_createprodpr_inputs,
     get_pr_number_from_url,
     get_pr_commits,
     get_branch_sha,
@@ -159,8 +164,16 @@ def cmd_standup(args: argparse.Namespace) -> None:
 
 def cmd_createpr(args: argparse.Namespace) -> None:
     jira_ticket = args.ticket
-    feature_branch = args.feature_branch or jira_ticket
-    repo_name = args.repo
+    try:
+        feature_branch, repo_name = resolve_createpr_inputs(
+            jira_ticket=jira_ticket,
+            legacy_args=args.legacy_args,
+            feature_branch=args.branch,
+            repo_name=args.repo,
+        )
+    except ValueError as e:
+        _err(str(e))
+        sys.exit(2)
     move_to_review = not args.no_transition
 
     _section(f"Creating DEV PR — {jira_ticket} / {repo_name}")
@@ -247,7 +260,16 @@ def cmd_createpr(args: argparse.Namespace) -> None:
 
 def cmd_createprodpr(args: argparse.Namespace) -> None:
     jira_ticket = args.ticket
-    feature_branch = args.feature_branch or jira_ticket
+    try:
+        feature_branch, repo_filter = resolve_createprodpr_inputs(
+            jira_ticket=jira_ticket,
+            legacy_args=args.legacy_args,
+            feature_branch=args.branch,
+            repo_name=args.repo,
+        )
+    except ValueError as e:
+        _err(str(e))
+        sys.exit(2)
 
     _section(f"Creating PROD PRs — {jira_ticket}")
 
@@ -260,6 +282,18 @@ def cmd_createprodpr(args: argparse.Namespace) -> None:
                 "Create DEV PRs first with 'createpr'."
             )
             sys.exit(1)
+
+        if repo_filter:
+            filtered_dev_links = filter_dev_pr_links(dev_links, repo_filter)
+            if not filtered_dev_links:
+                available_repos = ", ".join(sorted({link["repo"] for link in dev_links}))
+                _err(
+                    f"No DEV PR link found for repo '{repo_filter}' on ticket {jira_ticket}. "
+                    f"Available repos: {available_repos}"
+                )
+                sys.exit(1)
+            dev_links = filtered_dev_links
+            _info(f"Repo filter applied: {repo_filter}")
 
         _info(f"DEV PR links found: {len(dev_links)}")
 
@@ -387,17 +421,36 @@ def main() -> None:
     p.set_defaults(func=cmd_standup)
 
     # createpr
-    p = subparsers.add_parser("createpr", help="Create a DEV PR and link it to a Jira ticket")
+    p = subparsers.add_parser(
+        "createpr",
+        help="Create a DEV PR and link it to a Jira ticket",
+        usage="cli.py createpr ticket --repo REPO [--branch FEATURE_BRANCH] [--no-transition]",
+        description=(
+            "Create a DEV PR and link it to a Jira ticket. "
+            "Legacy positional syntax still works: createpr TICKET [feature-branch] repo"
+        ),
+    )
     p.add_argument("ticket", help="Jira ticket ID, e.g. CAH-123")
-    p.add_argument("feature_branch", nargs="?", help="Feature branch name (defaults to the Jira ticket ID)")
-    p.add_argument("repo", help="Repository name")
+    p.add_argument("legacy_args", nargs="*", help=argparse.SUPPRESS)
+    p.add_argument("--branch", help="Feature branch name (defaults to the Jira ticket ID)")
+    p.add_argument("--repo", help="Repository name")
     p.add_argument("--no-transition", action="store_true", help="Skip moving the Jira ticket to CodeReview")
     p.set_defaults(func=cmd_createpr)
 
     # createprodpr
-    p = subparsers.add_parser("createprodpr", help="Create PROD PRs from DEV PRs on a Jira ticket")
+    p = subparsers.add_parser(
+        "createprodpr",
+        help="Create PROD PRs from DEV PRs on a Jira ticket",
+        usage="cli.py createprodpr ticket [--branch FEATURE_BRANCH] [--repo REPO]",
+        description=(
+            "Create PROD PRs from DEV PRs on a Jira ticket. "
+            "Legacy positional feature-branch syntax still works: createprodpr TICKET [feature-branch]"
+        ),
+    )
     p.add_argument("ticket", help="Jira ticket ID, e.g. CAH-123")
-    p.add_argument("feature_branch", nargs="?", help="Feature branch name used to derive the PROD branch name (defaults to the Jira ticket ID)")
+    p.add_argument("legacy_args", nargs="*", help=argparse.SUPPRESS)
+    p.add_argument("--branch", help="Feature branch name used to derive the PROD branch name (defaults to the Jira ticket ID)")
+    p.add_argument("--repo", help="Only create the PROD PR for the specified repository")
     p.set_defaults(func=cmd_createprodpr)
 
     args = parser.parse_args()
