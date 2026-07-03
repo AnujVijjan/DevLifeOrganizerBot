@@ -12,6 +12,7 @@ from .helper import (
     get_repo_branches,
     detect_dev_branch,
     detect_prod_branch,
+    detect_uat_branch,
     validate_branch_exists,
     get_existing_pr,
     jira_weblink_exists,
@@ -32,6 +33,8 @@ from .helper import (
     update_pull_request_body,
     create_prod_pull_request,
     add_jira_prod_pr_link,
+    create_uat_pull_request,
+    add_jira_uat_pr_link,
 )
 from .constants import *
 
@@ -530,5 +533,178 @@ def handle_create_prod_pr(
         send_message_to_slack(
             client,
             f"PROD PR automation failed: {str(e)}",
+            SLACK_CHANNEL
+        )
+
+
+def handle_create_uat_pr(
+    jira_ticket: str,
+    feature_branch: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> None:
+    """
+    For a given Jira ticket, reads the open DEV PR links (optionally filtered to one repo), then:
+      1. Fetches commits from the DEV PR (for reference in the PR body).
+      2. Detects the UAT branch.
+      3. Creates a branch named '{feature-branch-or-ticket-id}-Uat' from UAT's HEAD.
+      4. Opens a UAT PR from that branch into the UAT branch.
+      5. Adds the UAT PR link back to the Jira ticket.
+    """
+
+    try:
+        feature_branch = feature_branch or jira_ticket
+        ticket_link = f"<{JIRA_BASE_URL}/browse/{jira_ticket}|{jira_ticket}>"
+
+        dev_links = get_dev_pr_links(jira_ticket)
+
+        if not dev_links:
+            send_message_to_slack(
+                client,
+                f"No DEV PR links found on ticket {ticket_link}. Add DEV PRs first via `/createpr`.",
+                SLACK_CHANNEL
+            )
+            return
+
+        if repo_name:
+            filtered_dev_links = filter_dev_pr_links(dev_links, repo_name)
+            if not filtered_dev_links:
+                available_repos = ", ".join(sorted({link["repo"] for link in dev_links}))
+                send_message_to_slack(
+                    client,
+                    (
+                        f"No DEV PR link found for repo `{repo_name}` on ticket {ticket_link}. "
+                        f"Available repos: {available_repos}"
+                    ),
+                    SLACK_CHANNEL
+                )
+                return
+            dev_links = filtered_dev_links
+
+        uat_branch_name = f"{feature_branch}-Uat"
+        results = []
+
+        for link in dev_links:
+
+            repo = link["repo"]
+            dev_pr_url = link["url"]
+
+            try:
+
+                pr_number = get_pr_number_from_url(dev_pr_url)
+
+                # Collect commit references from the DEV PR for the UAT PR body
+                raw_commits = get_pr_commits(repo, pr_number)
+                commit_refs = [
+                    (c["sha"], c["commit"]["message"].split("\n")[0])
+                    for c in raw_commits
+                ]
+
+                branches = get_repo_branches(repo)
+                uat_branch = detect_uat_branch(branches)
+
+                # Create UAT branch from UAT's current HEAD (clean base, no dev-only commits)
+                uat_head_sha = get_branch_sha(repo, uat_branch)
+
+                branch_created = False
+                try:
+                    create_branch(repo, uat_branch_name, uat_head_sha)
+                    branch_created = True
+                except Exception as branch_err:
+                    if "already exists" not in str(branch_err):
+                        raise
+
+                # Cherry-pick each DEV commit onto the UAT branch
+                picked = cherry_pick_commits_onto_branch(repo, raw_commits, uat_branch_name)
+
+                # Check for an existing open UAT PR before creating one
+                existing_pr = get_existing_pr(repo, uat_branch_name, uat_branch)
+
+                if existing_pr:
+                    uat_pr_url = existing_pr["html_url"]
+                    pr_created = False
+                    # Refresh the PR body with the latest cherry-picked commit list
+                    if commit_refs:
+                        updated_body = (
+                            f"Jira ticket: {jira_ticket}\n\n"
+                            f"**Cherry-picked commits from DEV PR:**\n"
+                            + "\n".join(f"- `{sha[:7]}` {msg}" for sha, msg in commit_refs)
+                        )
+                        update_pull_request_body(repo, existing_pr["number"], updated_body)
+                else:
+                    uat_pr = create_uat_pull_request(
+                        repo=repo,
+                        uat_branch_name=uat_branch_name,
+                        target_uat_branch=uat_branch,
+                        jira_ticket=jira_ticket,
+                        commit_refs=commit_refs
+                    )
+                    uat_pr_url = uat_pr["html_url"]
+                    pr_created = True
+
+                jira_link_added = False
+                if not jira_weblink_exists(jira_ticket, uat_pr_url):
+                    add_jira_uat_pr_link(jira_ticket, uat_pr_url, repo)
+                    jira_link_added = True
+
+                results.append({
+                    "repo": repo,
+                    "uat_branch": uat_branch,
+                    "uat_pr_url": uat_pr_url,
+                    "branch_created": branch_created,
+                    "pr_created": pr_created,
+                    "jira_link_added": jira_link_added,
+                    "commits_picked": picked,
+                    "error": None
+                })
+
+            except Exception as repo_err:
+                results.append({"repo": repo, "error": str(repo_err)})
+
+        # Build the Slack summary
+        message = [
+            "*UAT PR Automation Result*",
+            "",
+            f"*Ticket:* {ticket_link}",
+            f"*UAT Branch Name:* {uat_branch_name}",
+            f"*Repo Filter:* `{repo_name}`" if repo_name else "*Repo Filter:* All repos",
+            f"*DEV PRs processed:* {len(dev_links)}",
+            ""
+        ]
+
+        for r in results:
+            if r["error"]:
+                message.append(f"*{r['repo']}:* Failed — {r['error']}")
+            else:
+                bullets = []
+
+                if r["branch_created"]:
+                    bullets.append(f"Branch `{uat_branch_name}` created from `{r['uat_branch']}`.")
+                else:
+                    bullets.append(f"Branch `{uat_branch_name}` already existed.")
+
+                if r["pr_created"]:
+                    bullets.append(f"UAT PR created: {r['uat_pr_url']}")
+                else:
+                    bullets.append(f"UAT PR already existed: {r['uat_pr_url']}")
+
+                if r["jira_link_added"]:
+                    bullets.append("Jira UAT link added.")
+                else:
+                    bullets.append("Jira UAT link already existed.")
+
+                bullets.append(f"Commits cherry-picked: {r['commits_picked']}")
+
+                message.append(f"*{r['repo']}:*")
+                message.extend([f"  • {b}" for b in bullets])
+
+            message.append("")
+
+        send_message_to_slack(client, "\n".join(message), SLACK_CHANNEL)
+
+    except Exception as e:
+
+        send_message_to_slack(
+            client,
+            f"UAT PR automation failed: {str(e)}",
             SLACK_CHANNEL
         )

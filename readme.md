@@ -14,6 +14,7 @@ A Slack bot that automates the repetitive parts of a developer's day — task tr
 ### PR Automation
 - `/createpr <TICKET-ID> --repo <repo> [--branch feature-branch] [--no-transition]` — Creates a PR from your feature branch into the detected dev branch, defaulting the feature branch to the ticket ID when omitted, adds the PR link to the Jira ticket, and transitions the ticket to CodeReview
 - `/createprodpr <TICKET-ID> [--branch feature-branch] [--repo repo-name]` — Reads DEV PR links from the Jira ticket, optionally narrows the run to one repo, cherry-picks the commits onto a clean PROD branch named from the feature branch or ticket ID, opens a PROD PR, and links it back to the ticket
+- `/createuatpr <TICKET-ID> [--branch feature-branch] [--repo repo-name]` — Same as `/createprodpr` but targets the repo's UAT branch instead
 
 ### Standup Report
 - `/standup` — Generates a standup draft from your GitHub commits and Jira updates from the past 24 hours
@@ -47,6 +48,16 @@ A Slack bot that automates the repetitive parts of a developer's day — task tr
 6. Adds the PROD PR link to the Jira ticket
 7. Re-running on a ticket that already has a PROD PR will cherry-pick any new commits and refresh the PR body
 
+### UAT PR (`/createuatpr`)
+Works identically to `/createprodpr`, but targets the UAT branch instead of prod:
+1. Reads all `(DEV)` web links attached to the Jira ticket
+2. For each repo found, detects the UAT branch (`uat` → `staging` → `stage` → `qa`)
+3. Creates a `{feature-branch-or-ticket-ID}-Uat` branch from the UAT branch's HEAD
+4. Cherry-picks the DEV PR commits onto the UAT branch via the GitHub Git Data API — no dev-only history brought along
+5. Opens a UAT PR with the cherry-picked commit list in the body
+6. Adds the UAT PR link to the Jira ticket
+7. Re-running on a ticket that already has a UAT PR will cherry-pick any new commits and refresh the PR body
+
 ---
 
 ## CLI
@@ -69,9 +80,13 @@ python cli.py createprodpr CAH-123
 python cli.py createprodpr CAH-123 --branch my-feature-branch
 python cli.py createprodpr CAH-123 --repo MyRepo
 python cli.py createprodpr CAH-123 --branch my-feature-branch --repo MyRepo
+python cli.py createuatpr CAH-123
+python cli.py createuatpr CAH-123 --branch my-feature-branch
+python cli.py createuatpr CAH-123 --repo MyRepo
+python cli.py createuatpr CAH-123 --branch my-feature-branch --repo MyRepo
 ```
 
-Legacy positional syntax is still accepted for `createpr` and `createprodpr` so existing habits keep working.
+Legacy positional syntax is still accepted for `createpr`, `createprodpr`, and `createuatpr` so existing habits keep working.
 
 ---
 

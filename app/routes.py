@@ -6,12 +6,13 @@ from datetime import datetime, timedelta
 import sqlite3
 import threading
 from .constants import SLACK_USER_ID, DB_FILE
-from .helper import resolve_createpr_inputs, resolve_createprodpr_inputs
+from .helper import resolve_createpr_inputs, resolve_createprodpr_inputs, resolve_createuatpr_inputs
 
 app_routes = Blueprint('app_routes', __name__)
 
 CREATEPR_USAGE = "Usage: `/createpr TICKET-123 --repo repo-name [--branch feature-branch] [--no-transition]`"
 CREATEPRODPR_USAGE = "Usage: `/createprodpr TICKET-123 [--branch feature-branch] [--repo repo-name]`"
+CREATEUATPR_USAGE = "Usage: `/createuatpr TICKET-123 [--branch feature-branch] [--repo repo-name]`"
 
 def _parse_slack_command_parts(
     parts: List[str],
@@ -261,6 +262,60 @@ def create_prod_pr() -> Dict[str, Any]:
     return jsonify({
         "response_type": "ephemeral",
         "text": "Creating PROD PRs... please wait ⏳"
+    })
+
+
+@app_routes.route("/slack/createuatpr", methods=["POST"])
+def create_uat_pr() -> Dict[str, Any]:
+    """
+    Slack command:
+    /createuatpr TICKET-123 [--branch feature-branch] [--repo repo-name]
+
+    Reads DEV PR links from the Jira ticket, creates a '{feature-branch-or-ticket}-Uat'
+    branch from each repo's UAT branch, opens a UAT PR, and links it back to the ticket.
+    """
+
+    data = request.form
+    text = data.get("text", "").strip()
+
+    if not text:
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": CREATEUATPR_USAGE
+        })
+
+    try:
+        positional, options, _ = _parse_slack_command_parts(
+            text.split(),
+            value_flags={"--branch", "--repo"},
+            switch_flags=set(),
+        )
+        if not positional:
+            raise ValueError("Jira ticket is required.")
+
+        jira_ticket = positional[0]
+        feature_branch, repo_name = resolve_createuatpr_inputs(
+            jira_ticket=jira_ticket,
+            legacy_args=positional[1:],
+            feature_branch=options.get("--branch"),
+            repo_name=options.get("--repo"),
+        )
+    except ValueError as e:
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": f"{str(e)}\n{CREATEUATPR_USAGE}"
+        })
+
+    from .slack_bot import handle_create_uat_pr
+
+    threading.Thread(
+        target=handle_create_uat_pr,
+        args=(jira_ticket, feature_branch, repo_name)
+    ).start()
+
+    return jsonify({
+        "response_type": "ephemeral",
+        "text": "Creating UAT PRs... please wait ⏳"
     })
 
 

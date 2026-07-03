@@ -444,6 +444,36 @@ def resolve_createprodpr_inputs(
 
     return resolved_branch or jira_ticket, resolved_repo
 
+def resolve_createuatpr_inputs(
+    jira_ticket: str,
+    legacy_args: List[str],
+    feature_branch: Optional[str] = None,
+    repo_name: Optional[str] = None,
+) -> Tuple[str, Optional[str]]:
+    """
+    Resolves preferred flag-based inputs while keeping the legacy positional feature branch valid.
+    Legacy form:
+      createuatpr TICKET [feature-branch]
+    Preferred form:
+      createuatpr TICKET [--branch feature-branch] [--repo repo]
+    """
+
+    resolved_branch = feature_branch.strip() if feature_branch else None
+    resolved_repo = repo_name.strip() if repo_name else None
+    positional = [arg.strip() for arg in legacy_args if arg and arg.strip()]
+
+    if len(positional) > 1:
+        raise ValueError(
+            "Too many positional arguments. Use `createuatpr TICKET [--branch FEATURE] [--repo REPO]`."
+        )
+
+    if positional:
+        if resolved_branch:
+            raise ValueError("Feature branch was provided both positionally and with `--branch`.")
+        resolved_branch = positional[0]
+
+    return resolved_branch or jira_ticket, resolved_repo
+
 def get_pr_number_from_url(pr_url: str) -> int:
     """
     Extracts PR number from a GitHub PR URL.
@@ -495,6 +525,19 @@ def detect_prod_branch(branches: List[str]) -> str:
             return branch
 
     raise Exception(f"Unable to determine prod branch from branches: {branches}")
+
+def detect_uat_branch(branches: List[str]) -> str:
+    """
+    Detects the UAT branch using priority: uat > staging > stage > qa.
+    """
+
+    branch_set = set(branches)
+
+    for branch in ["uat", "staging", "stage", "qa"]:
+        if branch in branch_set:
+            return branch
+
+    raise Exception(f"Unable to determine UAT branch from branches: {branches}")
 
 def get_branch_sha(repo: str, branch: str) -> str:
     """
@@ -561,6 +604,39 @@ def create_prod_pull_request(
 
     if response.status_code not in [200, 201]:
         raise Exception(f"GitHub PROD PR creation failed: {response.text}")
+
+    return response.json()
+
+def create_uat_pull_request(
+    repo: str,
+    uat_branch_name: str,
+    target_uat_branch: str,
+    jira_ticket: str,
+    commit_refs: List[tuple]
+) -> Dict[str, Any]:
+    """
+    Creates a UAT PR. commit_refs is a list of (sha, message) tuples from the DEV PR.
+    """
+
+    url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/pulls"
+
+    if commit_refs:
+        commit_list = "\n".join(f"- `{sha[:7]}` {msg}" for sha, msg in commit_refs)
+        body = f"Jira ticket: {jira_ticket}\n\n**Cherry-picked commits from DEV PR:**\n{commit_list}"
+    else:
+        body = f"Jira ticket: {jira_ticket}"
+
+    payload = {
+        "title": f"[{jira_ticket}] UAT - Merge {uat_branch_name} into {target_uat_branch}",
+        "head": uat_branch_name,
+        "base": target_uat_branch,
+        "body": body
+    }
+
+    response = requests.post(url, headers=GITHUB_HEADERS, json=payload)
+
+    if response.status_code not in [200, 201]:
+        raise Exception(f"GitHub UAT PR creation failed: {response.text}")
 
     return response.json()
 
@@ -735,3 +811,22 @@ def add_jira_prod_pr_link(ticket: str, pr_url: str, repo: str) -> None:
 
     if response.status_code not in [200, 201]:
         raise Exception(f"Failed to add Jira PROD link: {response.text}")
+
+def add_jira_uat_pr_link(ticket: str, pr_url: str, repo: str) -> None:
+    """
+    Adds a UAT PR web link to a Jira ticket.
+    """
+
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket}/remotelink"
+
+    payload = {
+        "object": {
+            "url": pr_url,
+            "title": f"{repo} (UAT)"
+        }
+    }
+
+    response = requests.post(url, headers=JIRA_HEADERS, json=payload)
+
+    if response.status_code not in [200, 201]:
+        raise Exception(f"Failed to add Jira UAT link: {response.text}")

@@ -54,6 +54,13 @@
                 "description": "Create PROD PRs from DEV PRs linked to a Jira ticket",
                 "usage_hint": "<TICKET-ID> [feature-branch]",
                 "should_escape": false
+            },
+            {
+                "command": "/createuatpr",
+                "url": "https://yourdomain.com/slack/createuatpr",
+                "description": "Create UAT PRs from DEV PRs linked to a Jira ticket",
+                "usage_hint": "<TICKET-ID> [feature-branch]",
+                "should_escape": false
             }
         ]
     },

@@ -16,6 +16,10 @@ Usage
   python cli.py createprodpr CAH-123 --branch feature-branch
   python cli.py createprodpr CAH-123 --repo repo-name
   python cli.py createprodpr CAH-123 --branch feature-branch --repo repo-name
+  python cli.py createuatpr CAH-123
+  python cli.py createuatpr CAH-123 --branch feature-branch
+  python cli.py createuatpr CAH-123 --repo repo-name
+  python cli.py createuatpr CAH-123 --branch feature-branch --repo repo-name
 """
 
 import argparse
@@ -62,6 +66,11 @@ from app.helper import (
     update_pull_request_body,
     create_prod_pull_request,
     add_jira_prod_pr_link,
+    # UAT PR helpers
+    detect_uat_branch,
+    resolve_createuatpr_inputs,
+    create_uat_pull_request,
+    add_jira_uat_pr_link,
     # Standup helpers
     fetch_recent_commits,
     fetch_recent_jira_updates,
@@ -382,6 +391,133 @@ def cmd_createprodpr(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 # ---------------------------------------------------------------------------
+# Create UAT PR command
+# ---------------------------------------------------------------------------
+
+def cmd_createuatpr(args: argparse.Namespace) -> None:
+    jira_ticket = args.ticket
+    try:
+        feature_branch, repo_filter = resolve_createuatpr_inputs(
+            jira_ticket=jira_ticket,
+            legacy_args=args.legacy_args,
+            feature_branch=args.branch,
+            repo_name=args.repo,
+        )
+    except ValueError as e:
+        _err(str(e))
+        sys.exit(2)
+
+    _section(f"Creating UAT PRs — {jira_ticket}")
+
+    try:
+        dev_links = get_dev_pr_links(jira_ticket)
+
+        if not dev_links:
+            _err(
+                f"No DEV PR links found on ticket {jira_ticket}. "
+                "Create DEV PRs first with 'createpr'."
+            )
+            sys.exit(1)
+
+        if repo_filter:
+            filtered_dev_links = filter_dev_pr_links(dev_links, repo_filter)
+            if not filtered_dev_links:
+                available_repos = ", ".join(sorted({link["repo"] for link in dev_links}))
+                _err(
+                    f"No DEV PR link found for repo '{repo_filter}' on ticket {jira_ticket}. "
+                    f"Available repos: {available_repos}"
+                )
+                sys.exit(1)
+            dev_links = filtered_dev_links
+            _info(f"Repo filter applied: {repo_filter}")
+
+        _info(f"DEV PR links found: {len(dev_links)}")
+
+        uat_branch_name = f"{feature_branch}-Uat"
+
+        for link in dev_links:
+            repo = link["repo"]
+            dev_pr_url = link["url"]
+
+            print(f"\n  Repo: {repo}")
+            print(f"  DEV PR: {dev_pr_url}")
+
+            try:
+                pr_number = get_pr_number_from_url(dev_pr_url)
+
+                raw_commits = get_pr_commits(repo, pr_number)
+                commit_refs = [
+                    (c["sha"], c["commit"]["message"].split("\n")[0])
+                    for c in raw_commits
+                ]
+                _info(f"DEV commits found: {len(commit_refs)}")
+                for sha, msg in commit_refs:
+                    print(f"    - {sha[:7]}  {msg}")
+
+                branches = get_repo_branches(repo)
+                uat_branch = detect_uat_branch(branches)
+                _info(f"UAT branch detected: {uat_branch}")
+
+                # Create UAT branch from UAT's current HEAD (clean base)
+                uat_head_sha = get_branch_sha(repo, uat_branch)
+
+                branch_created = False
+                try:
+                    create_branch(repo, uat_branch_name, uat_head_sha)
+                    branch_created = True
+                    _ok(f"Branch '{uat_branch_name}' created from '{uat_branch}'.")
+                except Exception as branch_err:
+                    if "already exists" in str(branch_err):
+                        _info(f"Branch '{uat_branch_name}' already existed.")
+                    else:
+                        raise
+
+                # Cherry-pick each DEV commit onto the UAT branch
+                picked = cherry_pick_commits_onto_branch(repo, raw_commits, uat_branch_name)
+                _ok(f"Cherry-picked {picked} commit(s) onto '{uat_branch_name}'.")
+
+                existing_pr = get_existing_pr(repo, uat_branch_name, uat_branch)
+                if existing_pr:
+                    uat_pr_url = existing_pr["html_url"]
+                    pr_created = False
+                    _info(f"UAT PR already existed: {uat_pr_url}")
+                    # Refresh the PR body with the latest cherry-picked commit list
+                    if commit_refs:
+                        updated_body = (
+                            f"Jira ticket: {jira_ticket}\n\n"
+                            f"**Cherry-picked commits from DEV PR:**\n"
+                            + "\n".join(f"- `{sha[:7]}` {msg}" for sha, msg in commit_refs)
+                        )
+                        update_pull_request_body(repo, existing_pr["number"], updated_body)
+                        _ok("PR body updated with latest commits.")
+                else:
+                    uat_pr = create_uat_pull_request(
+                        repo=repo,
+                        uat_branch_name=uat_branch_name,
+                        target_uat_branch=uat_branch,
+                        jira_ticket=jira_ticket,
+                        commit_refs=commit_refs,
+                    )
+                    uat_pr_url = uat_pr["html_url"]
+                    pr_created = True
+                    _ok(f"UAT PR created: {uat_pr_url}")
+
+                jira_link_added = False
+                if not jira_weblink_exists(jira_ticket, uat_pr_url):
+                    add_jira_uat_pr_link(jira_ticket, uat_pr_url, repo)
+                    jira_link_added = True
+                    _ok("Jira UAT link added.")
+                else:
+                    _info("Jira UAT link already existed.")
+
+            except Exception as repo_err:
+                _err(f"{repo}: {repo_err}")
+
+    except Exception as e:
+        _err(str(e))
+        sys.exit(1)
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -452,6 +588,22 @@ def main() -> None:
     p.add_argument("--branch", help="Feature branch name used to derive the PROD branch name (defaults to the Jira ticket ID)")
     p.add_argument("--repo", help="Only create the PROD PR for the specified repository")
     p.set_defaults(func=cmd_createprodpr)
+
+    # createuatpr
+    p = subparsers.add_parser(
+        "createuatpr",
+        help="Create UAT PRs from DEV PRs on a Jira ticket",
+        usage="cli.py createuatpr ticket [--branch FEATURE_BRANCH] [--repo REPO]",
+        description=(
+            "Create UAT PRs from DEV PRs on a Jira ticket. "
+            "Legacy positional feature-branch syntax still works: createuatpr TICKET [feature-branch]"
+        ),
+    )
+    p.add_argument("ticket", help="Jira ticket ID, e.g. CAH-123")
+    p.add_argument("legacy_args", nargs="*", help=argparse.SUPPRESS)
+    p.add_argument("--branch", help="Feature branch name used to derive the UAT branch name (defaults to the Jira ticket ID)")
+    p.add_argument("--repo", help="Only create the UAT PR for the specified repository")
+    p.set_defaults(func=cmd_createuatpr)
 
     args = parser.parse_args()
     args.func(args)
