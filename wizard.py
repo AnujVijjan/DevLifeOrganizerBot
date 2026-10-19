@@ -8,7 +8,14 @@ flag-based CLI. The equivalent command line is printed before each run.
 import argparse
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from app.constants import DEFAULT_ASSIGNEE, DEPLOY_ENVIRONMENTS, JIRA_STATUS_CODE_REVIEW, SP_DEPLOY_DEFAULT_REPO
+from app.constants import (
+    DEFAULT_ASSIGNEE,
+    DEPLOY_ENVIRONMENTS,
+    JIRA_STATUS_CODE_REVIEW,
+    PR_ENV_DEV,
+    PR_ENVIRONMENTS,
+    SP_DEPLOY_DEFAULT_REPO,
+)
 from app.helper import extract_jira_ticket_key, get_env_pr_links, parse_github_pr_url
 
 Commands = Dict[str, Callable[[argparse.Namespace], None]]
@@ -84,7 +91,7 @@ def ask_ticket(allow_pr_link: bool = False) -> str:
             print(f"  {error}")
 
 
-def pick_repo_from_ticket(ticket: str, envs: Tuple[str, ...] = ("DEV",)) -> Optional[str]:
+def pick_repo_from_ticket(ticket: str, envs: Tuple[str, ...] = (PR_ENV_DEV,)) -> Optional[str]:
     """
     Lists the repos that have PR links on the ticket and lets the user pick one
     or all. Returns None for all repos.
@@ -204,7 +211,7 @@ def flow_createprodpr(commands: Commands, session: Session) -> None:
 
 def flow_comparepr(commands: Commands, session: Session) -> None:
     ticket = ask_ticket()
-    repo = pick_repo_from_ticket(ticket, envs=("DEV", "UAT", "PROD"))
+    repo = pick_repo_from_ticket(ticket, envs=tuple(PR_ENVIRONMENTS))
 
     namespace = argparse.Namespace(ticket=ticket, repo=repo)
     shown = format_command("comparepr", [ticket], {"--repo": repo})

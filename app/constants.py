@@ -41,6 +41,12 @@ DEV_BRANCH_CANDIDATES = ["develop", "dev", "main", "master"]
 UAT_BRANCH_CANDIDATES = ["uat", "staging", "stage", "qa"]
 PROD_BRANCH_CANDIDATES = ["prod", "production", "master"]
 
+PR_ENV_DEV = "DEV"
+PR_ENV_UAT = "UAT"
+PR_ENV_PROD = "PROD"
+PR_ENVIRONMENTS = [PR_ENV_DEV, PR_ENV_UAT, PR_ENV_PROD]
+PR_LINK_TITLE_TEMPLATE = "{repo} ({env})"
+
 BRANCH_KIND_LABELS = {
     "dev_branch": "dev",
     "uat_branch": "UAT",
@@ -53,7 +59,7 @@ SP_SOURCE_DATABASE = os.getenv("SP_SOURCE_DATABASE")
 DEPLOY_ENVIRONMENTS = {
     "dev": {
         "label": "DEV",
-        "pr_env": "DEV",
+        "pr_env": PR_ENV_DEV,
         "fallback_pr_env": None,
         "source_database": SP_SOURCE_DATABASE,
         "target_database": os.getenv("DEV_DATABASE_NAME"),
@@ -62,8 +68,8 @@ DEPLOY_ENVIRONMENTS = {
     },
     "uat": {
         "label": "UAT",
-        "pr_env": "UAT",
-        "fallback_pr_env": "DEV",
+        "pr_env": PR_ENV_UAT,
+        "fallback_pr_env": PR_ENV_DEV,
         "source_database": SP_SOURCE_DATABASE,
         "target_database": os.getenv("UAT_DATABASE_NAME"),
         "connection_string": os.getenv("UAT_DATABASE_CONNECTION_STRING"),
@@ -71,7 +77,7 @@ DEPLOY_ENVIRONMENTS = {
     },
     "prod": {
         "label": "PROD",
-        "pr_env": "PROD",
+        "pr_env": PR_ENV_PROD,
         "fallback_pr_env": None,
         "source_database": SP_SOURCE_DATABASE,
         "target_database": os.getenv("PROD_DATABASE_NAME"),

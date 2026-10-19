@@ -187,12 +187,12 @@ def enable_deep_work_mode() -> Dict[str, Any]:
     :return: A JSON response confirming activation.
     """
     data = request.form
-    duration = int(data.get("text", 60))  # Default to 60 minutes if no duration is provided
+    duration = int(data.get("text", 60))
     end_time = datetime.utcnow() + timedelta(minutes=duration)
 
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM deep_work")  # Ensure only one active session
+    cursor.execute("DELETE FROM deep_work")
     cursor.execute("INSERT INTO deep_work (active, end_time) VALUES (1, ?)", (end_time,))
     conn.commit()
     conn.close()
@@ -211,7 +211,7 @@ def disable_deep_work_mode() -> Dict[str, Any]:
     """
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM deep_work")  # Clear deep work mode
+    cursor.execute("DELETE FROM deep_work")
     conn.commit()
     conn.close()
 
@@ -228,7 +228,6 @@ def send_standup_update() -> Dict[str, Any]:
     :return: A JSON response confirming that the standup report is being generated.
     """
     
-    # Respond immediately to prevent Slack timeout
     threading.Thread(target=async_generate_standup).start()
 
     return jsonify({
@@ -438,13 +437,11 @@ def create_pr() -> Dict[str, Any]:
 
     from .slack_bot import handle_create_pr
 
-    # Run PR creation in background thread
     threading.Thread(
         target=handle_create_pr,
         args=(jira_ticket, repo_name, feature_branch, transition_to, assign_to)
     ).start()
 
-    # Immediate response to Slack
     return jsonify({
         "response_type": "ephemeral",
         "text": "Creating PR... please wait ⏳"

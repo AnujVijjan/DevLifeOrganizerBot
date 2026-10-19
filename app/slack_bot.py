@@ -164,7 +164,7 @@ def is_deep_work_active() -> bool:
             return True
         else:
             from .routes import disable_deep_work_mode
-            disable_deep_work_mode()  # Auto disable if time expired
+            disable_deep_work_mode()
     return False
 
 
@@ -388,7 +388,6 @@ def handle_create_prod_pr(
 
                 pr_number = get_pr_number_from_url(dev_pr_url)
 
-                # Collect commit references from the DEV PR for the PROD PR body
                 raw_commits = get_pr_commits(repo, pr_number)
                 commit_refs = [
                     (c["sha"], c["commit"]["message"].split("\n")[0])
@@ -398,7 +397,6 @@ def handle_create_prod_pr(
                 branches = get_repo_branches(repo)
                 prod_branch = detect_prod_branch(branches, repo)
 
-                # Create PROD branch from production's HEAD (clean base, no dev-only commits)
                 prod_head_sha = get_branch_sha(repo, prod_branch)
 
                 branch_created = False
@@ -409,16 +407,13 @@ def handle_create_prod_pr(
                     if "already exists" not in str(branch_err):
                         raise
 
-                # Cherry-pick each DEV commit onto the PROD branch
                 picked = cherry_pick_commits_onto_branch(repo, raw_commits, prod_branch_name)
 
-                # Check for an existing open PROD PR before creating one
                 existing_pr = get_existing_pr(repo, prod_branch_name, prod_branch)
 
                 if existing_pr:
                     prod_pr_url = existing_pr["html_url"]
                     pr_created = False
-                    # Refresh the PR body with the latest cherry-picked commit list
                     if commit_refs:
                         updated_body = (
                             f"Jira ticket: {jira_ticket}\n\n"
@@ -456,7 +451,6 @@ def handle_create_prod_pr(
             except Exception as repo_err:
                 results.append({"repo": repo, "error": str(repo_err)})
 
-        # Build the Slack summary
         message = [
             "*PROD PR Automation Result*",
             "",
@@ -561,7 +555,6 @@ def handle_create_uat_pr(
 
                 pr_number = get_pr_number_from_url(dev_pr_url)
 
-                # Collect commit references from the DEV PR for the UAT PR body
                 raw_commits = get_pr_commits(repo, pr_number)
                 commit_refs = [
                     (c["sha"], c["commit"]["message"].split("\n")[0])
@@ -571,7 +564,6 @@ def handle_create_uat_pr(
                 branches = get_repo_branches(repo)
                 uat_branch = detect_uat_branch(branches, repo)
 
-                # Create UAT branch from UAT's current HEAD (clean base, no dev-only commits)
                 uat_head_sha = get_branch_sha(repo, uat_branch)
 
                 branch_created = False
@@ -582,16 +574,13 @@ def handle_create_uat_pr(
                     if "already exists" not in str(branch_err):
                         raise
 
-                # Cherry-pick each DEV commit onto the UAT branch
                 picked = cherry_pick_commits_onto_branch(repo, raw_commits, uat_branch_name)
 
-                # Check for an existing open UAT PR before creating one
                 existing_pr = get_existing_pr(repo, uat_branch_name, uat_branch)
 
                 if existing_pr:
                     uat_pr_url = existing_pr["html_url"]
                     pr_created = False
-                    # Refresh the PR body with the latest cherry-picked commit list
                     if commit_refs:
                         updated_body = (
                             f"Jira ticket: {jira_ticket}\n\n"
@@ -629,7 +618,6 @@ def handle_create_uat_pr(
             except Exception as repo_err:
                 results.append({"repo": repo, "error": str(repo_err)})
 
-        # Build the Slack summary
         message = [
             "*UAT PR Automation Result*",
             "",

@@ -219,6 +219,17 @@ https://yourcompany.atlassian.net/rest/api/3/field
 
 ---
 
+## Tests
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+pytest
+```
+
+The suite runs fully offline: GitHub, Jira and the database are mocked, and your real `.env` and `repo_config.json` are never read.
+
+---
+
 ## Contributing
 
 Contributions are welcome. Please open an issue first to discuss what you'd like to change, then submit a pull request.

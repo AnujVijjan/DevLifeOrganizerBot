@@ -145,3 +145,4 @@ details.txt
 # Local private config
 repo_config.json
 .claude/
+.pytest_cache/

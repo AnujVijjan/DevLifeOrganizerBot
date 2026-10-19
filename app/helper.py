@@ -59,7 +59,6 @@ def fetch_pull_requests(repo: str) -> List[Dict[str, Any]]:
     pr_list = response.json()
     branch_names = [branch.strip() for branch in GITHUB_BRANCH_NAMES.split(",") if branch.strip()]
     
-    # Filter PRs to include only those where the base branch is in our list
     filtered_pr_list = [
         pr for pr in pr_list if pr.get("base", {}).get("ref") in branch_names
     ]
@@ -272,22 +271,40 @@ def create_pull_request(repo: str, feature_branch: str, dev_branch: str, jira_ti
 
     return response.json()
 
-def add_jira_pr_link(ticket: str, pr_url: str, repo: str):
+def format_pr_link_title(repo: str, env: str) -> str:
+    """
+    Builds the Jira web-link title that tags a PR with its environment,
+    e.g. "my-repo (UAT)".
+    """
+
+    return PR_LINK_TITLE_TEMPLATE.format(repo=repo, env=env)
+
+def add_jira_env_pr_link(ticket: str, pr_url: str, repo: str, env: str) -> None:
+    """
+    Adds a PR web link tagged with env (DEV, UAT or PROD) to a Jira ticket.
+    """
 
     url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket}/remotelink"
 
     payload = {
         "object": {
             "url": pr_url,
-            "title": f"{repo} (DEV)"
+            "title": format_pr_link_title(repo, env)
         }
     }
 
     response = requests.post(url, headers=JIRA_HEADERS, json=payload)
 
     if response.status_code not in [200, 201]:
-        raise Exception(f"Failed to add Jira link: {response.text}")
-    
+        raise Exception(f"Failed to add Jira {env} link: {response.text}")
+
+def add_jira_pr_link(ticket: str, pr_url: str, repo: str) -> None:
+    """
+    Adds a DEV PR web link to a Jira ticket.
+    """
+
+    add_jira_env_pr_link(ticket, pr_url, repo, PR_ENV_DEV)
+
 def extract_jira_ticket_key(value: str) -> str:
     """
     Extracts a bare Jira ticket key (e.g. PROJ-123) from either a full Jira link
@@ -536,7 +553,7 @@ def get_env_pr_links(ticket: str, env_label: str) -> List[Dict[str, Any]]:
     """
 
     links = get_jira_remote_links(ticket)
-    suffix = f"({env_label})"
+    suffix = format_pr_link_title("", env_label).strip()
 
     env_links = []
 
@@ -557,7 +574,7 @@ def get_dev_pr_links(ticket: str) -> List[Dict[str, Any]]:
     Each item has: url, title, repo.
     """
 
-    return get_env_pr_links(ticket, "DEV")
+    return get_env_pr_links(ticket, PR_ENV_DEV)
 
 def get_uat_pr_links(ticket: str) -> List[Dict[str, Any]]:
     """
@@ -565,7 +582,7 @@ def get_uat_pr_links(ticket: str) -> List[Dict[str, Any]]:
     Each item has: url, title, repo.
     """
 
-    return get_env_pr_links(ticket, "UAT")
+    return get_env_pr_links(ticket, PR_ENV_UAT)
 
 def get_prod_pr_links(ticket: str) -> List[Dict[str, Any]]:
     """
@@ -573,7 +590,7 @@ def get_prod_pr_links(ticket: str) -> List[Dict[str, Any]]:
     Each item has: url, title, repo.
     """
 
-    return get_env_pr_links(ticket, "PROD")
+    return get_env_pr_links(ticket, PR_ENV_PROD)
 
 def filter_dev_pr_links(
     dev_links: List[Dict[str, Any]],
@@ -1103,7 +1120,6 @@ def _three_way_merge(
     pos = 0
     for i1, i2, replacement in merged_edits:
         if i1 < pos:
-            # Shouldn't happen given the overlap check above — bail out conservatively.
             return None, True
         merged_lines.extend(base_lines[pos:i1])
         merged_lines.extend(replacement)
@@ -1123,11 +1139,14 @@ def cherry_pick_commits_onto_branch(
 
     For each non-merge commit:
       1. Compare the commit to its parent to get the exact file changes.
-      2. Check that the target branch's current content at each touched path still
-         matches what the commit expects (or already matches the desired result) —
-         if it has diverged, raise CherryPickConflictError instead of overwriting.
-      3. Apply those changes on top of the PROD branch's current tree.
-      4. Create a new commit and advance the branch ref.
+      2. Resolve each touched path against the target branch's current content:
+         reuse the commit's content when the target still matches what the commit
+         expects (or already has the result); otherwise try a line-level 3-way
+         merge, and raise CherryPickConflictError only when edits truly overlap
+         or the content is binary.
+      3. Apply the resolved paths on top of the target branch's current tree.
+      4. Create a new commit (with a "cherry picked from" marker) and advance the
+         branch ref.
 
     Skips merge commits (>1 parent) and commits already cherry-picked onto the
     branch (detected via the "(cherry picked from commit XXXXXXX)" marker).
@@ -1135,8 +1154,6 @@ def cherry_pick_commits_onto_branch(
     first conflicting commit, leaving every commit picked before it in place.
     """
 
-    # Build a set of source SHAs (7-char) already on the branch so we can skip
-    # commits that were cherry-picked in a previous run.
     already_picked: set[str] = set()
     existing_commits_resp = requests.get(
         f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/commits",
@@ -1156,18 +1173,15 @@ def cherry_pick_commits_onto_branch(
         commit_sha = commit["sha"]
         parents = commit.get("parents", [])
 
-        # Skip merge commits — they bring in unrelated branch history
         if len(parents) != 1:
             continue
 
-        # Skip commits already cherry-picked onto this branch
         if commit_sha[:7] in already_picked:
             continue
 
         parent_sha = parents[0]["sha"]
         commit_message = commit["commit"]["message"]
 
-        # 1. Get file-level diff between parent and this commit
         compare_url = (
             f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}"
             f"/compare/{parent_sha}...{commit_sha}"
@@ -1182,7 +1196,6 @@ def cherry_pick_commits_onto_branch(
         if not files:
             continue
 
-        # 2. Get current PROD branch HEAD and its tree
         branch_url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/branches/{branch_name}"
         branch_resp = requests.get(branch_url, headers=GITHUB_HEADERS)
         if branch_resp.status_code != 200:
@@ -1191,10 +1204,6 @@ def cherry_pick_commits_onto_branch(
         current_head_sha = branch_data["commit"]["sha"]
         current_tree_sha = branch_data["commit"]["commit"]["tree"]["sha"]
 
-        # 2b. Resolve each touched path. If the target branch hasn't diverged
-        # from what this commit expects, reuse the commit's content as-is. If it
-        # has diverged, attempt a real 3-way line merge (mirrors `git`'s
-        # "Auto-merging") — only a genuine overlapping edit becomes a conflict.
         parent_commit_resp = requests.get(
             f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/commits/{parent_sha}",
             headers=GITHUB_HEADERS,
@@ -1216,18 +1225,14 @@ def cherry_pick_commits_onto_branch(
                 current_sha = current_tree_map.get(path)
 
                 if current_sha == base_sha or current_sha == desired_sha:
-                    # Clean fast-forward, or this path already matches the desired result.
                     resolved_paths[path] = desired_sha
                     continue
 
-                # Target has diverged from what this commit expects — try a real merge.
                 base_lines = _get_blob_lines(repo, base_sha) if base_sha else []
                 ours_lines = _get_blob_lines(repo, current_sha) if current_sha else []
                 theirs_lines = _get_blob_lines(repo, desired_sha) if desired_sha else []
 
                 if base_lines is None or ours_lines is None or theirs_lines is None or desired_sha is None:
-                    # Binary/non-UTF-8 content, or this touches a deletion — can't
-                    # safely auto-merge, so any divergence here is a real conflict.
                     conflicting_paths.append(path)
                     continue
 
@@ -1245,13 +1250,11 @@ def cherry_pick_commits_onto_branch(
         if not resolved_paths:
             continue
 
-        # 3. Build tree entries from the resolved per-path content
         tree_entries = [
             {"path": path, "mode": "100644", "type": "blob", "sha": sha}
             for path, sha in resolved_paths.items()
         ]
 
-        # 4. Create a new tree rooted at the PROD branch's current tree + changes
         tree_resp = requests.post(
             f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/git/trees",
             headers=GITHUB_HEADERS,
@@ -1263,7 +1266,6 @@ def cherry_pick_commits_onto_branch(
             )
         new_tree_sha = tree_resp.json()["sha"]
 
-        # 5. Create a new commit on top of the PROD branch
         new_commit_resp = requests.post(
             f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/git/commits",
             headers=GITHUB_HEADERS,
@@ -1277,7 +1279,6 @@ def cherry_pick_commits_onto_branch(
             raise Exception(f"Failed to create commit: {new_commit_resp.text}")
         new_commit_sha = new_commit_resp.json()["sha"]
 
-        # 6. Advance the PROD branch ref to the new commit
         ref_resp = requests.patch(
             f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/git/refs/heads/{branch_name}",
             headers=GITHUB_HEADERS,
@@ -1297,38 +1298,14 @@ def add_jira_prod_pr_link(ticket: str, pr_url: str, repo: str) -> None:
     Adds a PROD PR web link to a Jira ticket.
     """
 
-    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket}/remotelink"
-
-    payload = {
-        "object": {
-            "url": pr_url,
-            "title": f"{repo} (PROD)"
-        }
-    }
-
-    response = requests.post(url, headers=JIRA_HEADERS, json=payload)
-
-    if response.status_code not in [200, 201]:
-        raise Exception(f"Failed to add Jira PROD link: {response.text}")
+    add_jira_env_pr_link(ticket, pr_url, repo, PR_ENV_PROD)
 
 def add_jira_uat_pr_link(ticket: str, pr_url: str, repo: str) -> None:
     """
     Adds a UAT PR web link to a Jira ticket.
     """
 
-    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{ticket}/remotelink"
-
-    payload = {
-        "object": {
-            "url": pr_url,
-            "title": f"{repo} (UAT)"
-        }
-    }
-
-    response = requests.post(url, headers=JIRA_HEADERS, json=payload)
-
-    if response.status_code not in [200, 201]:
-        raise Exception(f"Failed to add Jira UAT link: {response.text}")
+    add_jira_env_pr_link(ticket, pr_url, repo, PR_ENV_UAT)
 
 def compare_env_prs(jira_ticket: str, repo_name: Optional[str] = None) -> List[Dict[str, Any]]:
     """
@@ -1352,7 +1329,7 @@ def compare_env_prs(jira_ticket: str, repo_name: Optional[str] = None) -> List[D
     prod_links = filter_dev_pr_links(get_prod_pr_links(jira_ticket), repo_name)
 
     repos: Dict[str, Dict[str, str]] = {}
-    for env, links in (("DEV", dev_links), ("UAT", uat_links), ("PROD", prod_links)):
+    for env, links in ((PR_ENV_DEV, dev_links), (PR_ENV_UAT, uat_links), (PR_ENV_PROD, prod_links)):
         for link in links:
             repos.setdefault(link["repo"], {})[env] = link["url"]
 
