@@ -1,0 +1,9 @@
+{
+    "repos": {
+        "my-repo": {
+            "dev_branch": "integration",
+            "uat_branch": "staging",
+            "prod_branch": "main"
+        }
+    }
+}

@@ -13,16 +13,13 @@ from .helper import (
     detect_dev_branch,
     detect_prod_branch,
     detect_uat_branch,
+    ensure_feature_branch_differs,
     validate_branch_exists,
     get_existing_pr,
     jira_weblink_exists,
     create_pull_request,
     add_jira_pr_link,
-    get_jira_issue_status,
-    get_qa_tester_account_id,
-    assign_jira_issue,
-    get_jira_transitions,
-    transition_jira_issue,
+    apply_jira_workflow,
     get_dev_pr_links,
     filter_dev_pr_links,
     get_pr_number_from_url,
@@ -35,6 +32,7 @@ from .helper import (
     add_jira_prod_pr_link,
     create_uat_pull_request,
     add_jira_uat_pr_link,
+    compare_env_prs,
 )
 from .constants import *
 
@@ -166,7 +164,7 @@ def is_deep_work_active() -> bool:
             return True
         else:
             from .routes import disable_deep_work_mode
-            disable_deep_work_mode()  # Auto disable if time expired
+            disable_deep_work_mode()
     return False
 
 
@@ -227,10 +225,12 @@ def handle_create_pr(
     jira_ticket: str,
     repo_name: str,
     feature_branch: Optional[str] = None,
-    move_to_review: bool = True,
+    transition_to: Optional[str] = None,
+    assign_to: Optional[str] = None,
 ) -> None:
     """
-    Creates PR and manages Jira automation.
+    Creates the DEV PR and links it to the Jira ticket. Moving the ticket to a
+    status (transition_to) and assigning it (assign_to) are opt-in.
     """
 
     try:
@@ -239,8 +239,6 @@ def handle_create_pr(
 
         pr_created = False
         jira_link_added = False
-        ticket_moved = False
-        ticket_assigned = False
 
         branches = get_repo_branches(repo_name)
 
@@ -252,7 +250,8 @@ def handle_create_pr(
             )
             return
 
-        dev_branch = detect_dev_branch(branches)
+        dev_branch = detect_dev_branch(branches, repo_name)
+        ensure_feature_branch_differs(feature_branch, dev_branch)
 
         validate_branch_exists(repo_name, feature_branch)
 
@@ -282,37 +281,7 @@ def handle_create_pr(
 
             jira_link_added = True
 
-        current_status = get_jira_issue_status(jira_ticket)
-
-        if move_to_review:
-
-            transitions = get_jira_transitions(jira_ticket)
-
-            code_review_transition = next(
-                (
-                    t for t in transitions
-                    if t["name"].lower() == JIRA_STATUS_CODE_REVIEW.lower()
-                ),
-                None
-            )
-
-            if code_review_transition:
-
-                transition_jira_issue(
-                    jira_ticket,
-                    code_review_transition["id"]
-                )
-
-                ticket_moved = True
-
-                qa_account_id = get_qa_tester_account_id(jira_ticket)
-
-                assign_jira_issue(
-                    jira_ticket,
-                    qa_account_id
-                )
-
-                ticket_assigned = True
+        workflow = apply_jira_workflow(jira_ticket, transition_to, assign_to)
 
         message = [
             "*PR Automation Result*",
@@ -338,16 +307,16 @@ def handle_create_pr(
         else:
             message.append("• Jira PR link already existed.")
 
-        if ticket_moved:
-            message.append("• Ticket moved to *CodeReview*.")
+        if transition_to and workflow["transitioned"]:
+            message.append(f"• Ticket moved to *{transition_to}*.")
 
-        if ticket_assigned:
-            message.append("• Ticket assigned to QA tester.")
-
-        if move_to_review and not ticket_moved:
+        if transition_to and not workflow["transitioned"]:
             message.append(
-                f"• Ticket status is `{current_status}`, so no workflow change was performed."
+                f"• No `{transition_to}` transition is available from `{workflow['status_before']}`, so the ticket was not moved."
             )
+
+        if workflow["assigned"]:
+            message.append(f"• Ticket assigned to `{assign_to}`.")
 
         send_message_to_slack(
             client,
@@ -419,7 +388,6 @@ def handle_create_prod_pr(
 
                 pr_number = get_pr_number_from_url(dev_pr_url)
 
-                # Collect commit references from the DEV PR for the PROD PR body
                 raw_commits = get_pr_commits(repo, pr_number)
                 commit_refs = [
                     (c["sha"], c["commit"]["message"].split("\n")[0])
@@ -427,9 +395,8 @@ def handle_create_prod_pr(
                 ]
 
                 branches = get_repo_branches(repo)
-                prod_branch = detect_prod_branch(branches)
+                prod_branch = detect_prod_branch(branches, repo)
 
-                # Create PROD branch from production's HEAD (clean base, no dev-only commits)
                 prod_head_sha = get_branch_sha(repo, prod_branch)
 
                 branch_created = False
@@ -440,16 +407,13 @@ def handle_create_prod_pr(
                     if "already exists" not in str(branch_err):
                         raise
 
-                # Cherry-pick each DEV commit onto the PROD branch
                 picked = cherry_pick_commits_onto_branch(repo, raw_commits, prod_branch_name)
 
-                # Check for an existing open PROD PR before creating one
                 existing_pr = get_existing_pr(repo, prod_branch_name, prod_branch)
 
                 if existing_pr:
                     prod_pr_url = existing_pr["html_url"]
                     pr_created = False
-                    # Refresh the PR body with the latest cherry-picked commit list
                     if commit_refs:
                         updated_body = (
                             f"Jira ticket: {jira_ticket}\n\n"
@@ -487,7 +451,6 @@ def handle_create_prod_pr(
             except Exception as repo_err:
                 results.append({"repo": repo, "error": str(repo_err)})
 
-        # Build the Slack summary
         message = [
             "*PROD PR Automation Result*",
             "",
@@ -592,7 +555,6 @@ def handle_create_uat_pr(
 
                 pr_number = get_pr_number_from_url(dev_pr_url)
 
-                # Collect commit references from the DEV PR for the UAT PR body
                 raw_commits = get_pr_commits(repo, pr_number)
                 commit_refs = [
                     (c["sha"], c["commit"]["message"].split("\n")[0])
@@ -600,9 +562,8 @@ def handle_create_uat_pr(
                 ]
 
                 branches = get_repo_branches(repo)
-                uat_branch = detect_uat_branch(branches)
+                uat_branch = detect_uat_branch(branches, repo)
 
-                # Create UAT branch from UAT's current HEAD (clean base, no dev-only commits)
                 uat_head_sha = get_branch_sha(repo, uat_branch)
 
                 branch_created = False
@@ -613,16 +574,13 @@ def handle_create_uat_pr(
                     if "already exists" not in str(branch_err):
                         raise
 
-                # Cherry-pick each DEV commit onto the UAT branch
                 picked = cherry_pick_commits_onto_branch(repo, raw_commits, uat_branch_name)
 
-                # Check for an existing open UAT PR before creating one
                 existing_pr = get_existing_pr(repo, uat_branch_name, uat_branch)
 
                 if existing_pr:
                     uat_pr_url = existing_pr["html_url"]
                     pr_created = False
-                    # Refresh the PR body with the latest cherry-picked commit list
                     if commit_refs:
                         updated_body = (
                             f"Jira ticket: {jira_ticket}\n\n"
@@ -660,7 +618,6 @@ def handle_create_uat_pr(
             except Exception as repo_err:
                 results.append({"repo": repo, "error": str(repo_err)})
 
-        # Build the Slack summary
         message = [
             "*UAT PR Automation Result*",
             "",
@@ -706,5 +663,65 @@ def handle_create_uat_pr(
         send_message_to_slack(
             client,
             f"UAT PR automation failed: {str(e)}",
+            SLACK_CHANNEL
+        )
+
+
+def handle_compare_pr(
+    jira_ticket: str,
+    repo_name: Optional[str] = None,
+) -> None:
+    """
+    For a given Jira ticket, compares the changed-file content of the DEV/UAT/PROD
+    PRs linked on the ticket (optionally filtered to one repo) so drift between
+    environments can be caught before merging.
+    """
+
+    try:
+        ticket_link = f"<{JIRA_BASE_URL}/browse/{jira_ticket}|{jira_ticket}>"
+
+        report = compare_env_prs(jira_ticket, repo_name)
+
+        if not report:
+            send_message_to_slack(
+                client,
+                f"No DEV/UAT/PROD PR links found on ticket {ticket_link}.",
+                SLACK_CHANNEL
+            )
+            return
+
+        message = [
+            "*PR Environment Comparison*",
+            "",
+            f"*Ticket:* {ticket_link}",
+            f"*Repo Filter:* `{repo_name}`" if repo_name else "*Repo Filter:* All repos",
+            ""
+        ]
+
+        for r in report:
+            env_summary = ", ".join(f"{env} <{url}|PR>" for env, url in sorted(r["envs"].items()))
+
+            if r["verdict"] == "MATCH":
+                message.append(f"*{r['repo']}:* ✅ MATCH — {env_summary}")
+            elif r["verdict"] == "INCOMPLETE":
+                message.append(f"*{r['repo']}:* ⏳ INCOMPLETE (only {env_summary}) — nothing to compare yet")
+            else:
+                message.append(f"*{r['repo']}:* ❌ MISMATCH — {env_summary}")
+                for f in r["files"]:
+                    if f["status"] == "DIFFERS":
+                        message.append(f"  • `{f['path']}` differs across environments")
+                    elif f["status"] == "MISSING":
+                        missing = ", ".join(f["missing_in"])
+                        message.append(f"  • `{f['path']}` missing in: {missing}")
+
+            message.append("")
+
+        send_message_to_slack(client, "\n".join(message), SLACK_CHANNEL)
+
+    except Exception as e:
+
+        send_message_to_slack(
+            client,
+            f"PR comparison failed: {str(e)}",
             SLACK_CHANNEL
         )

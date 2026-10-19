@@ -2,12 +2,12 @@ import os
 import base64
 from dotenv import load_dotenv
 
-# Ensure environment variables are loaded
 load_dotenv()
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance', 'bot_data.db')
+REPO_CONFIG_FILE = os.getenv("REPO_CONFIG_FILE", os.path.join(BASE_DIR, "repo_config.json"))
 
-# GitHub Constants
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_USERNAME = os.getenv("GITHUB_USERNAME")
 GITHUB_ORG = os.getenv("GITHUB_ORG")
@@ -20,14 +20,13 @@ GITHUB_HEADERS = {
     "Accept": "application/vnd.github.v3+json"
 }
 
-# Jira Constants
 JIRA_BASE_URL = os.getenv("JIRA_BASE_URL")
 JIRA_EMAIL = os.getenv("JIRA_EMAIL")
 JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
 JIRA_PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY")
-JIRA_STATUS_IN_PROGRESS = os.getenv("JIRA_STATUS_IN_PROGRESS", "In Progress")
 JIRA_STATUS_CODE_REVIEW = os.getenv("JIRA_STATUS_CODE_REVIEW", "CodeReview")
-JIRA_QA_TESTER_FIELD = os.getenv("JIRA_QA_TESTER_FIELD", "customfield_10111")
+JIRA_QA_TESTER_FIELD = os.getenv("JIRA_QA_TESTER_FIELD")
+DEFAULT_ASSIGNEE = "qa"
 JIRA_HEADERS = {
     "Authorization": f"Basic {base64.b64encode(f'{JIRA_EMAIL}:{JIRA_API_TOKEN}'.encode()).decode()}",
     "Content-Type": "application/json"
@@ -37,3 +36,52 @@ SLACK_BOT_TOKEN: str = os.getenv("SLACK_BOT_TOKEN")
 SLACK_CHANNEL: str = os.getenv("SLACK_CHANNEL")
 SLACK_USER_TOKEN: str = os.getenv("SLACK_USER_TOKEN")
 SLACK_USER_ID: str = os.getenv("SLACK_USER_ID")
+
+DEV_BRANCH_CANDIDATES = ["develop", "dev", "main", "master"]
+UAT_BRANCH_CANDIDATES = ["uat", "staging", "stage", "qa"]
+PROD_BRANCH_CANDIDATES = ["prod", "production", "master"]
+
+PR_ENV_DEV = "DEV"
+PR_ENV_UAT = "UAT"
+PR_ENV_PROD = "PROD"
+PR_ENVIRONMENTS = [PR_ENV_DEV, PR_ENV_UAT, PR_ENV_PROD]
+PR_LINK_TITLE_TEMPLATE = "{repo} ({env})"
+
+BRANCH_KIND_LABELS = {
+    "dev_branch": "dev",
+    "uat_branch": "UAT",
+    "prod_branch": "prod",
+}
+
+SP_DEPLOY_DEFAULT_REPO = os.getenv("SP_DEPLOY_DEFAULT_REPO")
+SP_SOURCE_DATABASE = os.getenv("SP_SOURCE_DATABASE")
+
+DEPLOY_ENVIRONMENTS = {
+    "dev": {
+        "label": "DEV",
+        "pr_env": PR_ENV_DEV,
+        "fallback_pr_env": None,
+        "source_database": SP_SOURCE_DATABASE,
+        "target_database": os.getenv("DEV_DATABASE_NAME"),
+        "connection_string": os.getenv("DEV_DATABASE_CONNECTION_STRING"),
+        "requires_typed_confirmation": False,
+    },
+    "uat": {
+        "label": "UAT",
+        "pr_env": PR_ENV_UAT,
+        "fallback_pr_env": PR_ENV_DEV,
+        "source_database": SP_SOURCE_DATABASE,
+        "target_database": os.getenv("UAT_DATABASE_NAME"),
+        "connection_string": os.getenv("UAT_DATABASE_CONNECTION_STRING"),
+        "requires_typed_confirmation": False,
+    },
+    "prod": {
+        "label": "PROD",
+        "pr_env": PR_ENV_PROD,
+        "fallback_pr_env": None,
+        "source_database": SP_SOURCE_DATABASE,
+        "target_database": os.getenv("PROD_DATABASE_NAME"),
+        "connection_string": os.getenv("PROD_DATABASE_CONNECTION_STRING"),
+        "requires_typed_confirmation": True,
+    },
+}

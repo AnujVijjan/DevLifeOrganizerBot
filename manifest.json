@@ -61,6 +61,13 @@
                 "description": "Create UAT PRs from DEV PRs linked to a Jira ticket",
                 "usage_hint": "<TICKET-ID> [feature-branch]",
                 "should_escape": false
+            },
+            {
+                "command": "/comparepr",
+                "url": "https://yourdomain.com/slack/comparepr",
+                "description": "Compare DEV/UAT/PROD PR changes for a Jira ticket to sanity-check they match",
+                "usage_hint": "<TICKET-ID> [--repo repo-name]",
+                "should_escape": false
             }
         ]
     },
