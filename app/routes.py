@@ -1,24 +1,37 @@
 from flask import Blueprint, request, jsonify
 from .models import add_task_to_db, get_tasks_from_db, update_task_to_db
 from .slack_bot import handle_slack_mention, async_generate_standup
-from typing import Dict, Any, List, Set, Tuple
+from typing import Dict, Any, List, Optional, Set, Tuple
 from datetime import datetime, timedelta
+import shlex
 import sqlite3
 import threading
-from .constants import SLACK_USER_ID, DB_FILE
+from .constants import SLACK_USER_ID, DB_FILE, JIRA_STATUS_CODE_REVIEW, DEFAULT_ASSIGNEE
 from .helper import resolve_createpr_inputs, resolve_createprodpr_inputs, resolve_createuatpr_inputs
 
 app_routes = Blueprint('app_routes', __name__)
 
-CREATEPR_USAGE = "Usage: `/createpr TICKET-123 --repo repo-name [--branch feature-branch] [--no-transition]`"
+CREATEPR_USAGE = (
+    "Usage: `/createpr TICKET-123 --repo repo-name [--branch feature-branch] "
+    "[--transition [status]] [--assign [qa|me|name|email]]`"
+)
 CREATEPRODPR_USAGE = "Usage: `/createprodpr TICKET-123 [--branch feature-branch] [--repo repo-name]`"
 CREATEUATPR_USAGE = "Usage: `/createuatpr TICKET-123 [--branch feature-branch] [--repo repo-name]`"
+COMPAREPR_USAGE = "Usage: `/comparepr TICKET-123 [--repo repo-name]`"
 
 def _parse_slack_command_parts(
     parts: List[str],
     value_flags: Set[str],
     switch_flags: Set[str],
+    optional_value_flags: Optional[Set[str]] = None,
 ) -> Tuple[List[str], Dict[str, str], Set[str]]:
+    """
+    Splits command tokens into positionals, options and switches. A flag in
+    optional_value_flags takes the next token as its value unless that token is
+    another flag, in which case it is recorded with an empty value.
+    """
+
+    optional_value_flags = optional_value_flags or set()
     positional: List[str] = []
     options: Dict[str, str] = {}
     switches: Set[str] = set()
@@ -29,12 +42,24 @@ def _parse_slack_command_parts(
 
         if "=" in part:
             flag, value = part.split("=", 1)
-            if flag in value_flags:
+            if flag in value_flags or flag in optional_value_flags:
                 if flag in options or not value:
                     raise ValueError("Duplicate or empty option value.")
                 options[flag] = value
                 i += 1
                 continue
+
+        if part in optional_value_flags:
+            if part in options:
+                raise ValueError("Duplicate option.")
+            next_part = parts[i + 1] if i + 1 < len(parts) else None
+            if next_part and not next_part.startswith("--"):
+                options[part] = next_part
+                i += 2
+            else:
+                options[part] = ""
+                i += 1
+            continue
 
         if part in value_flags:
             if part in options or i + 1 >= len(parts):
@@ -319,11 +344,62 @@ def create_uat_pr() -> Dict[str, Any]:
     })
 
 
+@app_routes.route("/slack/comparepr", methods=["POST"])
+def compare_pr() -> Dict[str, Any]:
+    """
+    Slack command:
+    /comparepr TICKET-123 [--repo repo-name]
+
+    Compares the changed-file content of the DEV/UAT/PROD PRs linked on the
+    Jira ticket, per repo, as a sanity check before merging.
+    """
+
+    data = request.form
+    text = data.get("text", "").strip()
+
+    if not text:
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": COMPAREPR_USAGE
+        })
+
+    try:
+        positional, options, _ = _parse_slack_command_parts(
+            text.split(),
+            value_flags={"--repo"},
+            switch_flags=set(),
+        )
+        if not positional:
+            raise ValueError("Jira ticket is required.")
+
+        jira_ticket = positional[0]
+        repo_name = options.get("--repo")
+    except ValueError as e:
+        return jsonify({
+            "response_type": "ephemeral",
+            "text": f"{str(e)}\n{COMPAREPR_USAGE}"
+        })
+
+    from .slack_bot import handle_compare_pr
+
+    threading.Thread(
+        target=handle_compare_pr,
+        args=(jira_ticket, repo_name)
+    ).start()
+
+    return jsonify({
+        "response_type": "ephemeral",
+        "text": "Comparing DEV/UAT/PROD PRs... please wait ⏳"
+    })
+
+
 @app_routes.route("/slack/createpr", methods=["POST"])
 def create_pr() -> Dict[str, Any]:
     """
     Slack command:
-    /createpr TICKET-123 --repo repo-name [--branch feature-branch] [--no-transition]
+    /createpr TICKET-123 --repo repo-name [--branch feature-branch] [--transition [status]] [--assign [user]]
+
+    Quote values containing spaces, e.g. --transition "In QA".
     """
 
     data = request.form
@@ -336,10 +412,11 @@ def create_pr() -> Dict[str, Any]:
         })
 
     try:
-        positional, options, switches = _parse_slack_command_parts(
-            text.split(),
+        positional, options, _ = _parse_slack_command_parts(
+            shlex.split(text),
             value_flags={"--branch", "--repo"},
-            switch_flags={"--no-transition"},
+            switch_flags=set(),
+            optional_value_flags={"--transition", "--assign"},
         )
         if not positional:
             raise ValueError("Jira ticket is required.")
@@ -351,7 +428,8 @@ def create_pr() -> Dict[str, Any]:
             feature_branch=options.get("--branch"),
             repo_name=options.get("--repo"),
         )
-        move_to_review = "--no-transition" not in switches
+        transition_to = (options["--transition"] or JIRA_STATUS_CODE_REVIEW) if "--transition" in options else None
+        assign_to = (options["--assign"] or DEFAULT_ASSIGNEE) if "--assign" in options else None
     except ValueError as e:
         return jsonify({
             "response_type": "ephemeral",
@@ -363,7 +441,7 @@ def create_pr() -> Dict[str, Any]:
     # Run PR creation in background thread
     threading.Thread(
         target=handle_create_pr,
-        args=(jira_ticket, repo_name, feature_branch, move_to_review)
+        args=(jira_ticket, repo_name, feature_branch, transition_to, assign_to)
     ).start()
 
     # Immediate response to Slack
