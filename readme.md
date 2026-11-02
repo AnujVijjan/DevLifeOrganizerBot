@@ -13,7 +13,7 @@ A Slack bot that automates the repetitive parts of a developer's day — task tr
 
 ### PR Automation
 - `/createpr <TICKET-ID> --repo <repo> [--branch feature-branch] [--transition [status]] [--assign [user]]` — Creates a PR from your feature branch into the detected dev branch, defaulting the feature branch to the ticket ID when omitted, and adds the PR link to the Jira ticket. The ticket is left as is unless you opt in: `--transition` moves it to a status (bare flag: the configured CodeReview status) and `--assign` assigns it (bare flag: the ticket's QA tester; or `me`, or a name/email). Quote values with spaces, e.g. `--transition "In QA"`
-- `/createprodpr <TICKET-ID> [--branch feature-branch] [--repo repo-name]` — Reads DEV PR links from the Jira ticket, optionally narrows the run to one repo, cherry-picks the commits onto a clean PROD branch named from the feature branch or ticket ID, opens a PROD PR, and links it back to the ticket
+- `/createprodpr <TICKET-ID> [--branch feature-branch] [--repo repo-name] [--source auto|dev|uat]` — Reads each repo's UAT PR links from the Jira ticket (falling back to its DEV PR links), optionally narrows the run to one repo, cherry-picks the commits onto a clean PROD branch named from the feature branch or ticket ID, opens a PROD PR, and links it back to the ticket
 - `/createuatpr <TICKET-ID> [--branch feature-branch] [--repo repo-name]` — Same as `/createprodpr` but targets the repo's UAT branch instead
 
 ### Stored Procedure Deployment
@@ -44,13 +44,14 @@ A Slack bot that automates the repetitive parts of a developer's day — task tr
 6. Only if you pass `--assign [user]`, assigns the ticket to `qa` (the ticket's QA tester, the default), `me`, or the Jira user matching a name or email. The assignee is resolved before anything changes, so a bad name fails without touching the ticket
 
 ### PROD PR (`/createprodpr`)
-1. Reads all `(DEV)` web links attached to the Jira ticket
-2. For each repo found, detects the prod branch (`prod` → `production` → `master`, or the repo's `prod_branch` override)
-3. Creates a `{feature-branch-or-ticket-ID}-Prod` branch from the prod branch's HEAD
-4. Cherry-picks the DEV PR commits onto the PROD branch via the GitHub Git Data API — no dev-only history brought along
-5. Opens a PROD PR with the cherry-picked commit list in the body
-6. Adds the PROD PR link to the Jira ticket
-7. Re-running on a ticket that already has a PROD PR will cherry-pick any new commits and refresh the PR body
+1. Reads the `(UAT)` and `(DEV)` web links attached to the Jira ticket
+2. For each repo, takes the commits of its UAT PRs (they carry any conflict fixes made there), falling back to its DEV PRs when it has no UAT PR. `--source dev|uat` forces one side (`auto` is the default). Several PRs of a repo are combined in PR-number order
+3. Detects the prod branch (`prod` → `production` → `master`, or the repo's `prod_branch` override)
+4. Creates a `{feature-branch-or-ticket-ID}-Prod` branch from the prod branch's HEAD
+5. Cherry-picks those commits onto the PROD branch via the GitHub Git Data API — no dev-only history brought along
+6. Opens a PROD PR with the cherry-picked commit list in the body
+7. Adds the PROD PR link to the Jira ticket
+8. Re-running on a ticket that already has a PROD PR will cherry-pick any new commits and refresh the PR body
 
 ### UAT PR (`/createuatpr`)
 Works identically to `/createprodpr`, but targets the UAT branch instead of prod:
@@ -105,6 +106,7 @@ python cli.py createpr PROJ-123 --repo MyRepo --transition "In QA" --assign some
 python cli.py createprodpr PROJ-123
 python cli.py createprodpr PROJ-123 --branch my-feature-branch
 python cli.py createprodpr PROJ-123 --repo MyRepo
+python cli.py createprodpr PROJ-123 --source dev
 python cli.py createprodpr PROJ-123 --branch my-feature-branch --repo MyRepo
 python cli.py createuatpr PROJ-123
 python cli.py createuatpr PROJ-123 --branch my-feature-branch

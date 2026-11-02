@@ -41,6 +41,11 @@ DEV_BRANCH_CANDIDATES = ["develop", "dev", "main", "master"]
 UAT_BRANCH_CANDIDATES = ["uat", "staging", "stage", "qa"]
 PROD_BRANCH_CANDIDATES = ["prod", "production", "master"]
 
+CHERRY_PICK_MARKER_PATTERN = r"\(cherry picked from commit ([0-9a-f]{7,40})\)"
+CHERRY_PICK_HISTORY_MAX_PAGES = 10
+PROD_SOURCE_AUTO = "auto"
+PROD_SOURCE_CHOICES = ["auto", "dev", "uat"]
+
 PR_ENV_DEV = "DEV"
 PR_ENV_UAT = "UAT"
 PR_ENV_PROD = "PROD"

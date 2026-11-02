@@ -4,6 +4,7 @@ import json
 import base64
 import difflib
 import requests
+from collections import Counter
 from functools import lru_cache
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
@@ -737,17 +738,90 @@ def parse_github_pr_url(value: str) -> Optional[Tuple[str, int]]:
 
 def get_pr_commits(repo: str, pr_number: int) -> List[Dict[str, Any]]:
     """
-    Returns commit list for a given PR (sha + first line of message).
+    Returns the full commit list for a given PR (sha + first line of message),
+    handling pagination.
     """
 
     url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/pulls/{pr_number}/commits"
+    all_commits: List[Dict[str, Any]] = []
+    page = 1
 
-    response = requests.get(url, headers=GITHUB_HEADERS)
+    while True:
+        response = requests.get(url, headers=GITHUB_HEADERS, params={"per_page": 100, "page": page})
 
-    if response.status_code != 200:
-        return []
+        if response.status_code != 200:
+            if page == 1:
+                return []
+            raise Exception(f"Failed to fetch commits page {page} for PR #{pr_number} in `{repo}`: {response.text}")
 
-    return response.json()
+        commits = response.json()
+
+        if not commits:
+            break
+
+        all_commits.extend(commits)
+        page += 1
+
+    return all_commits
+
+def group_pr_links_by_repo(links: List[Dict[str, Any]]) -> List[Tuple[str, List[str]]]:
+    """
+    Groups PR links by repo, keeping repo order of first appearance and sorting
+    each repo's PR urls by PR number so older PRs come first.
+    """
+
+    grouped: Dict[str, List[str]] = {}
+    for link in links:
+        urls = grouped.setdefault(link["repo"], [])
+        if link["url"] not in urls:
+            urls.append(link["url"])
+
+    return [(repo, sorted(urls, key=get_pr_number_from_url)) for repo, urls in grouped.items()]
+
+def select_prod_sources(
+    dev_links: List[Dict[str, Any]],
+    uat_links: List[Dict[str, Any]],
+    source: str = PROD_SOURCE_AUTO,
+) -> List[Tuple[str, str, List[str]]]:
+    """
+    Picks, per repo, which PRs the PROD commits come from. Returns
+    (repo, source env, PR urls sorted by number) triples. "auto" prefers the
+    repo's UAT PRs (they carry any conflict fixes made there) and falls back to
+    its DEV PRs; "uat" and "dev" force one side, and a repo with no PR on the
+    forced side comes back with an empty url list so the caller can report it.
+    """
+
+    dev_by_repo = dict(group_pr_links_by_repo(dev_links))
+    uat_by_repo = dict(group_pr_links_by_repo(uat_links))
+
+    repos = list(dev_by_repo)
+    if source != "dev":
+        repos += [repo for repo in uat_by_repo if repo not in dev_by_repo]
+
+    selected = []
+    for repo in repos:
+        if source != "dev" and repo in uat_by_repo:
+            selected.append((repo, PR_ENV_UAT, uat_by_repo[repo]))
+        elif source == "uat":
+            selected.append((repo, PR_ENV_UAT, []))
+        else:
+            selected.append((repo, PR_ENV_DEV, dev_by_repo[repo]))
+
+    return selected
+
+def dedupe_commits(commits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Drops repeated commits (same sha), keeping the first occurrence and the order.
+    """
+
+    seen: set = set()
+    unique = []
+    for commit in commits:
+        if commit["sha"] not in seen:
+            seen.add(commit["sha"])
+            unique.append(commit)
+
+    return unique
 
 def get_pr_files(repo: str, pr_number: int) -> List[Dict[str, Any]]:
     """
@@ -860,17 +934,18 @@ def create_prod_pull_request(
     prod_branch_name: str,
     target_prod_branch: str,
     jira_ticket: str,
-    commit_refs: List[tuple]
+    commit_refs: List[tuple],
+    source_env: str = PR_ENV_DEV,
 ) -> Dict[str, Any]:
     """
-    Creates a PROD PR. commit_refs is a list of (sha, message) tuples from the DEV PR.
+    Creates a PROD PR. commit_refs is a list of (sha, message) tuples from the source_env PR.
     """
 
     url = f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/pulls"
 
     if commit_refs:
         commit_list = "\n".join(f"- `{sha[:7]}` {msg}" for sha, msg in commit_refs)
-        body = f"Jira ticket: {jira_ticket}\n\n**Cherry-picked commits from DEV PR:**\n{commit_list}"
+        body = f"Jira ticket: {jira_ticket}\n\n**Cherry-picked commits from {source_env} PR:**\n{commit_list}"
     else:
         body = f"Jira ticket: {jira_ticket}"
 
@@ -1129,6 +1204,109 @@ def _three_way_merge(
     return merged_lines, False
 
 
+def _contains_block(lines: List[str], block: List[str]) -> bool:
+    """
+    Whether block appears as a contiguous run of lines inside lines.
+    """
+
+    size = len(block)
+    return any(lines[i:i + size] == block for i in range(len(lines) - size + 1))
+
+
+def _edits_already_applied(base_lines: List[str], ours_lines: List[str], theirs_lines: List[str]) -> bool:
+    """
+    Whether the target's content already carries the commit's changes, e.g. after
+    the conflict was resolved by hand: every inserted/replaced block of the
+    commit is present in the target and every deleted block is gone. Line endings
+    and blank-only hunks are ignored; at least one non-blank hunk must decide it.
+    """
+
+    def normalize(lines: List[str]) -> List[str]:
+        return [line.rstrip("\r\n") for line in lines]
+
+    base, ours, theirs = normalize(base_lines), normalize(ours_lines), normalize(theirs_lines)
+    decisive = False
+
+    for i1, i2, replacement in _opcodes_as_edits(base, theirs):
+        if replacement:
+            if not any(line.strip() for line in replacement):
+                continue
+            if not _contains_block(ours, replacement):
+                return False
+        else:
+            if not any(line.strip() for line in base[i1:i2]):
+                continue
+            if _contains_block(ours, base[i1:i2]):
+                return False
+        decisive = True
+
+    return decisive
+
+
+def _commit_fingerprint(commit: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """
+    Returns (author email, author date) of a commit; both survive a local
+    `git cherry-pick`, so they identify the same change on another branch.
+    """
+
+    author = commit.get("commit", {}).get("author") or {}
+    email, date = author.get("email"), author.get("date")
+
+    return (email, date) if email and date else None
+
+
+def _collect_applied_commits(
+    repo: str, branch_name: str, commits: List[Dict[str, Any]]
+) -> Tuple[List[str], set]:
+    """
+    Scans the target branch history since the oldest source commit and returns
+    (source shas named by "(cherry picked from commit ...)" markers, author
+    fingerprints of every commit found), so commits already on the branch --
+    including ones cherry-picked and conflict-resolved by hand -- are recognised.
+    """
+
+    committed = [c["commit"]["committer"]["date"] for c in commits if c.get("commit", {}).get("committer")]
+    params: Dict[str, Any] = {"sha": branch_name, "per_page": 100}
+    if committed:
+        params["since"] = min(committed)
+
+    marker = re.compile(CHERRY_PICK_MARKER_PATTERN)
+    picked_shas: List[str] = []
+    fingerprints: set = set()
+
+    for page in range(1, CHERRY_PICK_HISTORY_MAX_PAGES + 1):
+        response = requests.get(
+            f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/commits",
+            headers=GITHUB_HEADERS,
+            params={**params, "page": page},
+        )
+
+        if response.status_code != 200:
+            break
+
+        existing = response.json()
+
+        if not existing:
+            break
+
+        for entry in existing:
+            picked_shas.extend(marker.findall(entry.get("commit", {}).get("message", "")))
+            fingerprint = _commit_fingerprint(entry)
+            if fingerprint:
+                fingerprints.add(fingerprint)
+
+    return picked_shas, fingerprints
+
+
+def _strip_cherry_pick_markers(message: str) -> str:
+    """
+    Removes trailing "(cherry picked from commit ...)" lines so a commit that was
+    itself cherry-picked doesn't collect a second marker.
+    """
+
+    return re.sub(r"(?:\s*" + CHERRY_PICK_MARKER_PATTERN + r")+\s*$", "", message)
+
+
 def cherry_pick_commits_onto_branch(
     repo: str,
     commits: List[Dict[str, Any]],
@@ -1148,24 +1326,16 @@ def cherry_pick_commits_onto_branch(
       4. Create a new commit (with a "cherry picked from" marker) and advance the
          branch ref.
 
-    Skips merge commits (>1 parent) and commits already cherry-picked onto the
-    branch (detected via the "(cherry picked from commit XXXXXXX)" marker).
+    Skips merge commits (>1 parent) and commits already on the branch, detected
+    via the "(cherry picked from commit ...)" marker (short or full sha) or a
+    matching author email + author date (kept by a manual `git cherry-pick`).
+    A path whose content already carries the commit's changes (a conflict fixed
+    by hand) is treated as applied instead of conflicting again.
     Returns the number of commits picked. Raises CherryPickConflictError on the
     first conflicting commit, leaving every commit picked before it in place.
     """
 
-    already_picked: set[str] = set()
-    existing_commits_resp = requests.get(
-        f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/commits",
-        headers=GITHUB_HEADERS,
-        params={"sha": branch_name, "per_page": 100},
-    )
-    if existing_commits_resp.status_code == 200:
-        _marker = re.compile(r"\(cherry picked from commit ([0-9a-f]{7})\)")
-        for ec in existing_commits_resp.json():
-            msg = ec.get("commit", {}).get("message", "")
-            for m in _marker.findall(msg):
-                already_picked.add(m)
+    picked_shas, applied_fingerprints = _collect_applied_commits(repo, branch_name, commits)
 
     picked = 0
 
@@ -1176,7 +1346,10 @@ def cherry_pick_commits_onto_branch(
         if len(parents) != 1:
             continue
 
-        if commit_sha[:7] in already_picked:
+        if any(commit_sha.startswith(prefix) for prefix in picked_shas):
+            continue
+
+        if _commit_fingerprint(commit) in applied_fingerprints:
             continue
 
         parent_sha = parents[0]["sha"]
@@ -1239,6 +1412,8 @@ def cherry_pick_commits_onto_branch(
                 merged_lines, has_conflict = _three_way_merge(base_lines, ours_lines, theirs_lines)
 
                 if has_conflict:
+                    if _edits_already_applied(base_lines, ours_lines, theirs_lines):
+                        continue
                     conflicting_paths.append(path)
                     continue
 
@@ -1270,7 +1445,7 @@ def cherry_pick_commits_onto_branch(
             f"{GITHUB_BASE_URI}/repos/{GITHUB_ORG}/{repo}/git/commits",
             headers=GITHUB_HEADERS,
             json={
-                "message": f"{commit_message}\n\n(cherry picked from commit {commit_sha[:7]})",
+                "message": f"{_strip_cherry_pick_markers(commit_message)}\n\n(cherry picked from commit {commit_sha[:7]})",
                 "tree": new_tree_sha,
                 "parents": [current_head_sha],
             },
@@ -1307,16 +1482,44 @@ def add_jira_uat_pr_link(ticket: str, pr_url: str, repo: str) -> None:
 
     add_jira_env_pr_link(ticket, pr_url, repo, PR_ENV_UAT)
 
+def _file_change_signature(entries: List[Dict[str, Any]]) -> Optional[Tuple[str, Any]]:
+    """
+    Summarises what a file's PR entries changed, ignoring the rest of the file so
+    a different base branch doesn't register as a difference. Added and removed
+    lines (whitespace-trimmed, blanks ignored) are netted across the entries in
+    order, so a later PR that removes an earlier PR's line cancels it. Entries
+    without a patch (binary or very large files) fall back to the last blob sha.
+    Returns None when the net change is empty.
+    """
+
+    if any(entry.get("patch") is None for entry in entries):
+        return ("sha", entries[-1].get("sha"))
+
+    net: Counter = Counter()
+    for entry in entries:
+        for line in entry["patch"].splitlines():
+            if line.startswith("+"):
+                net[line[1:].strip()] += 1
+            elif line.startswith("-"):
+                net[line[1:].strip()] -= 1
+
+    changes = frozenset((text, count) for text, count in net.items() if count and text)
+
+    return ("patch", changes) if changes else None
+
+
 def compare_env_prs(jira_ticket: str, repo_name: Optional[str] = None) -> List[Dict[str, Any]]:
     """
-    For a Jira ticket, compares the changed-file content of the DEV/UAT/PROD PRs
-    linked on the ticket, per repo, so drift between environments can be caught
-    before merging.
+    For a Jira ticket, compares what the DEV/UAT/PROD PRs linked on the ticket
+    changed, per repo and per file (the added/removed lines, not the whole file,
+    so a different base branch isn't flagged), to catch drift between
+    environments before merging. When an environment has several PRs for a repo,
+    their changes are combined in PR-number order.
 
     Returns a list of per-repo reports:
       {
         "repo": str,
-        "envs": {"DEV": url, "UAT": url, "PROD": url}  # only envs with a PR link
+        "envs": {"DEV": [url, ...], "UAT": [url], "PROD": [url]}  # only envs with a PR link
         "verdict": "MATCH" | "MISMATCH" | "INCOMPLETE",
         "files": [{"path": str, "status": "OK" | "MISSING" | "DIFFERS", "missing_in": [env, ...]}],
       }
@@ -1328,19 +1531,26 @@ def compare_env_prs(jira_ticket: str, repo_name: Optional[str] = None) -> List[D
     uat_links = filter_dev_pr_links(get_uat_pr_links(jira_ticket), repo_name)
     prod_links = filter_dev_pr_links(get_prod_pr_links(jira_ticket), repo_name)
 
-    repos: Dict[str, Dict[str, str]] = {}
+    repos: Dict[str, Dict[str, List[str]]] = {}
     for env, links in ((PR_ENV_DEV, dev_links), (PR_ENV_UAT, uat_links), (PR_ENV_PROD, prod_links)):
-        for link in links:
-            repos.setdefault(link["repo"], {})[env] = link["url"]
+        for link in sorted(links, key=lambda l: get_pr_number_from_url(l["url"])):
+            repos.setdefault(link["repo"], {}).setdefault(env, []).append(link["url"])
 
     report = []
 
     for repo, envs in sorted(repos.items()):
-        env_files: Dict[str, Dict[str, Optional[str]]] = {}
-        for env, pr_url in envs.items():
-            pr_number = get_pr_number_from_url(pr_url)
-            files = get_pr_files(repo, pr_number)
-            env_files[env] = {f["filename"]: f.get("sha") for f in files}
+        env_files: Dict[str, Dict[str, Tuple[str, Any]]] = {}
+        for env, pr_urls in envs.items():
+            entries_by_path: Dict[str, List[Dict[str, Any]]] = {}
+            for pr_url in pr_urls:
+                for f in get_pr_files(repo, get_pr_number_from_url(pr_url)):
+                    entries_by_path.setdefault(f["filename"], []).append(f)
+
+            env_files[env] = {}
+            for path, entries in entries_by_path.items():
+                signature = _file_change_signature(entries)
+                if signature is not None:
+                    env_files[env][path] = signature
 
         present_envs = sorted(env_files.keys())
         all_paths = sorted({path for files in env_files.values() for path in files})
@@ -1349,11 +1559,11 @@ def compare_env_prs(jira_ticket: str, repo_name: Optional[str] = None) -> List[D
         mismatch = False
 
         for path in all_paths:
-            shas = {env: env_files[env].get(path) for env in present_envs}
-            distinct_shas = {sha for sha in shas.values() if sha is not None}
-            missing_in = [env for env in present_envs if shas[env] is None]
+            signatures = {env: env_files[env].get(path) for env in present_envs}
+            distinct_signatures = {sig for sig in signatures.values() if sig is not None}
+            missing_in = [env for env in present_envs if signatures[env] is None]
 
-            if len(distinct_shas) > 1:
+            if len(distinct_signatures) > 1:
                 status = "DIFFERS"
                 mismatch = True
             elif missing_in:

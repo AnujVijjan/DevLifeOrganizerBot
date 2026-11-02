@@ -27,6 +27,10 @@ from .helper import (
     get_branch_sha,
     create_branch,
     cherry_pick_commits_onto_branch,
+    group_pr_links_by_repo,
+    select_prod_sources,
+    get_uat_pr_links,
+    dedupe_commits,
     update_pull_request_body,
     create_prod_pull_request,
     add_jira_prod_pr_link,
@@ -337,10 +341,12 @@ def handle_create_prod_pr(
     jira_ticket: str,
     feature_branch: Optional[str] = None,
     repo_name: Optional[str] = None,
+    source: str = PROD_SOURCE_AUTO,
 ) -> None:
     """
-    For a given Jira ticket, reads the open DEV PR links (optionally filtered to one repo), then:
-      1. Fetches commits from the DEV PR (for reference in the PR body).
+    For a given Jira ticket, reads each repo's UAT PR links (falling back to its DEV PR links, or forced by source;
+    optionally filtered to one repo), then:
+      1. Fetches commits from those PRs (for reference in the PR body).
       2. Detects the prod branch.
       3. Creates a branch named '{feature-branch-or-ticket-id}-Prod' from prod's HEAD.
       4. Opens a PROD PR from that branch into the prod branch.
@@ -352,43 +358,45 @@ def handle_create_prod_pr(
         ticket_link = f"<{JIRA_BASE_URL}/browse/{jira_ticket}|{jira_ticket}>"
 
         dev_links = get_dev_pr_links(jira_ticket)
+        uat_links = get_uat_pr_links(jira_ticket) if source != "dev" else []
 
-        if not dev_links:
+        if not dev_links and not uat_links:
             send_message_to_slack(
                 client,
-                f"No DEV PR links found on ticket {ticket_link}. Add DEV PRs first via `/createpr`.",
+                f"No DEV or UAT PR links found on ticket {ticket_link}. Add DEV PRs first via `/createpr`.",
                 SLACK_CHANNEL
             )
             return
 
         if repo_name:
-            filtered_dev_links = filter_dev_pr_links(dev_links, repo_name)
-            if not filtered_dev_links:
-                available_repos = ", ".join(sorted({link["repo"] for link in dev_links}))
+            available_repos = ", ".join(sorted({link["repo"] for link in dev_links + uat_links}))
+            dev_links = filter_dev_pr_links(dev_links, repo_name)
+            uat_links = filter_dev_pr_links(uat_links, repo_name)
+            if not dev_links and not uat_links:
                 send_message_to_slack(
                     client,
                     (
-                        f"No DEV PR link found for repo `{repo_name}` on ticket {ticket_link}. "
+                        f"No PR link found for repo `{repo_name}` on ticket {ticket_link}. "
                         f"Available repos: {available_repos}"
                     ),
                     SLACK_CHANNEL
                 )
                 return
-            dev_links = filtered_dev_links
 
         prod_branch_name = f"{feature_branch}-Prod"
         results = []
-
-        for link in dev_links:
-
-            repo = link["repo"]
-            dev_pr_url = link["url"]
+        for repo, source_env, pr_urls in select_prod_sources(dev_links, uat_links, source):
 
             try:
 
-                pr_number = get_pr_number_from_url(dev_pr_url)
+                if not pr_urls:
+                    raise Exception(f"No {source_env} PR link on ticket {jira_ticket}.")
 
-                raw_commits = get_pr_commits(repo, pr_number)
+                raw_commits = dedupe_commits([
+                    commit
+                    for source_pr_url in pr_urls
+                    for commit in get_pr_commits(repo, get_pr_number_from_url(source_pr_url))
+                ])
                 commit_refs = [
                     (c["sha"], c["commit"]["message"].split("\n")[0])
                     for c in raw_commits
@@ -417,7 +425,7 @@ def handle_create_prod_pr(
                     if commit_refs:
                         updated_body = (
                             f"Jira ticket: {jira_ticket}\n\n"
-                            f"**Cherry-picked commits from DEV PR:**\n"
+                            f"**Cherry-picked commits from {source_env} PR:**\n"
                             + "\n".join(f"- `{sha[:7]}` {msg}" for sha, msg in commit_refs)
                         )
                         update_pull_request_body(repo, existing_pr["number"], updated_body)
@@ -427,7 +435,8 @@ def handle_create_prod_pr(
                         prod_branch_name=prod_branch_name,
                         target_prod_branch=prod_branch,
                         jira_ticket=jira_ticket,
-                        commit_refs=commit_refs
+                        commit_refs=commit_refs,
+                        source_env=source_env
                     )
                     prod_pr_url = prod_pr["html_url"]
                     pr_created = True
@@ -445,6 +454,7 @@ def handle_create_prod_pr(
                     "pr_created": pr_created,
                     "jira_link_added": jira_link_added,
                     "commits_picked": picked,
+                    "source_env": source_env,
                     "error": None
                 })
 
@@ -457,7 +467,8 @@ def handle_create_prod_pr(
             f"*Ticket:* {ticket_link}",
             f"*PROD Branch Name:* {prod_branch_name}",
             f"*Repo Filter:* `{repo_name}`" if repo_name else "*Repo Filter:* All repos",
-            f"*DEV PRs processed:* {len(dev_links)}",
+            f"*Commit source:* {source}",
+            f"*PRs processed:* {len(dev_links) + len(uat_links)}",
             ""
         ]
 
@@ -482,7 +493,7 @@ def handle_create_prod_pr(
                 else:
                     bullets.append("Jira PROD link already existed.")
 
-                bullets.append(f"Commits cherry-picked: {r['commits_picked']}")
+                bullets.append(f"Commits cherry-picked from {r['source_env']} PR(s): {r['commits_picked']}")
 
                 message.append(f"*{r['repo']}:*")
                 message.extend([f"  • {b}" for b in bullets])
@@ -545,17 +556,15 @@ def handle_create_uat_pr(
 
         uat_branch_name = f"{feature_branch}-Uat"
         results = []
-
-        for link in dev_links:
-
-            repo = link["repo"]
-            dev_pr_url = link["url"]
+        for repo, pr_urls in group_pr_links_by_repo(dev_links):
 
             try:
 
-                pr_number = get_pr_number_from_url(dev_pr_url)
-
-                raw_commits = get_pr_commits(repo, pr_number)
+                raw_commits = dedupe_commits([
+                    commit
+                    for dev_pr_url in pr_urls
+                    for commit in get_pr_commits(repo, get_pr_number_from_url(dev_pr_url))
+                ])
                 commit_refs = [
                     (c["sha"], c["commit"]["message"].split("\n")[0])
                     for c in raw_commits
@@ -699,7 +708,7 @@ def handle_compare_pr(
         ]
 
         for r in report:
-            env_summary = ", ".join(f"{env} <{url}|PR>" for env, url in sorted(r["envs"].items()))
+            env_summary = ", ".join(f"{env} <{url}|PR>" for env, urls in sorted(r["envs"].items()) for url in urls)
 
             if r["verdict"] == "MATCH":
                 message.append(f"*{r['repo']}:* ✅ MATCH — {env_summary}")
