@@ -7,6 +7,7 @@ import pytest
 import cli
 import wizard
 from app.constants import DEPLOY_ENVIRONMENTS
+from app.helper import CherryPickConflictError
 
 BRANCHES = ["integration", "main", "PROJ-1", "PROJ-2"]
 PR_URL = "https://github.com/test-org/MyRepo/pull/9"
@@ -26,6 +27,7 @@ def github(monkeypatch, repo_config):
     monkeypatch.setattr(cli, "get_repo_branches", lambda repo: BRANCHES)
     monkeypatch.setattr(cli, "validate_branch_exists", lambda repo, branch: None)
     monkeypatch.setattr(cli, "get_existing_pr", lambda *args: None)
+    monkeypatch.setattr(cli, "get_uat_pr_links", lambda ticket: [])
     monkeypatch.setattr(cli, "jira_weblink_exists", lambda *args: True)
     monkeypatch.setattr(cli, "create_pull_request", lambda **kwargs: state.created.append(kwargs) or {"html_url": PR_URL})
     monkeypatch.setattr(cli, "apply_jira_workflow", lambda *args: state.workflow.append(args) or NO_WORKFLOW)
@@ -65,6 +67,70 @@ def test_createprodpr_branches_from_the_configured_prod_branch(github, monkeypat
     cli.cmd_createprodpr(argparse.Namespace(ticket="PROJ-1", legacy_args=[], branch=None, repo=None))
 
     assert github.branch_shas == ["main"]
+
+
+@pytest.fixture
+def two_prs_per_repo(github, repo_config, monkeypatch):
+    repo_config({
+        "MyRepo": {"dev_branch": "integration", "uat_branch": "main", "prod_branch": "main"},
+        "OtherRepo": {"dev_branch": "integration", "uat_branch": "main", "prod_branch": "main"},
+    })
+    links = [
+        {"repo": "MyRepo", "url": "https://github.com/test-org/MyRepo/pull/2"},
+        {"repo": "OtherRepo", "url": "https://github.com/test-org/OtherRepo/pull/3"},
+        {"repo": "MyRepo", "url": "https://github.com/test-org/MyRepo/pull/1"},
+    ]
+    commits = {
+        ("MyRepo", 1): ["a", "b"],
+        ("MyRepo", 2): ["b", "c"],
+        ("OtherRepo", 3): ["d"],
+    }
+    picked = []
+
+    def commit(sha):
+        return {"sha": sha, "parents": [], "commit": {"message": sha}}
+
+    monkeypatch.setattr(cli, "get_dev_pr_links", lambda ticket: links)
+    monkeypatch.setattr(cli, "get_pr_commits", lambda repo, number: [commit(sha) for sha in commits[(repo, number)]])
+    monkeypatch.setattr(cli, "get_branch_sha", lambda repo, branch: "sha")
+    monkeypatch.setattr(cli, "create_branch", lambda *args: None)
+    monkeypatch.setattr(cli, "get_existing_pr", lambda *args: {"html_url": "existing", "number": 1})
+
+    return SimpleNamespace(picked=picked, monkeypatch=monkeypatch)
+
+
+def run_pr_command(command):
+    getattr(cli, command)(argparse.Namespace(ticket="PROJ-1", legacy_args=[], branch=None, repo=None))
+
+
+@pytest.mark.parametrize("command", ["cmd_createprodpr", "cmd_createuatpr"])
+def test_a_repos_prs_are_cherry_picked_together_in_pr_number_order(two_prs_per_repo, command):
+    picked = two_prs_per_repo.picked
+    two_prs_per_repo.monkeypatch.setattr(
+        cli, "cherry_pick_commits_onto_branch",
+        lambda repo, commits, branch: picked.append((repo, [c["sha"] for c in commits])) or 0,
+    )
+
+    run_pr_command(command)
+
+    assert picked == [("MyRepo", ["a", "b", "c"]), ("OtherRepo", ["d"])]
+
+
+@pytest.mark.parametrize("command", ["cmd_createprodpr", "cmd_createuatpr"])
+def test_a_merge_conflict_stops_that_repo_but_not_the_others(two_prs_per_repo, command):
+    picked = two_prs_per_repo.picked
+
+    def cherry_pick(repo, commits, branch):
+        picked.append(repo)
+        if repo == "MyRepo":
+            raise CherryPickConflictError("abc1234", "msg", ["a.sql"])
+        return 0
+
+    two_prs_per_repo.monkeypatch.setattr(cli, "cherry_pick_commits_onto_branch", cherry_pick)
+
+    run_pr_command(command)
+
+    assert picked == ["MyRepo", "OtherRepo"]
 
 
 LINKS = {
@@ -222,3 +288,68 @@ def test_interactive_mode_exposes_every_command(monkeypatch):
         "addtask", "listtasks", "marktaskdone", "deepworkon", "deepworkoff", "standup",
         "createpr", "createprodpr", "createuatpr", "comparepr", "deploysp",
     }
+
+
+@pytest.fixture
+def prod_sources(github, repo_config, monkeypatch):
+    repo_config({"MyRepo": {"dev_branch": "integration", "uat_branch": "main", "prod_branch": "main"}})
+    commits = {1: ["d1", "d2"], 5: ["u1", "u2", "u3"]}
+    picked = []
+
+    def commit(sha):
+        return {"sha": sha, "parents": [], "commit": {"message": sha}}
+
+    monkeypatch.setattr(cli, "get_dev_pr_links", lambda ticket: [{"repo": "MyRepo", "url": "https://github.com/test-org/MyRepo/pull/1"}])
+    monkeypatch.setattr(cli, "get_pr_commits", lambda repo, number: [commit(sha) for sha in commits[number]])
+    monkeypatch.setattr(cli, "get_branch_sha", lambda repo, branch: "sha")
+    monkeypatch.setattr(cli, "create_branch", lambda *args: None)
+    monkeypatch.setattr(cli, "get_existing_pr", lambda *args: {"html_url": "existing", "number": 1})
+    monkeypatch.setattr(
+        cli, "cherry_pick_commits_onto_branch",
+        lambda repo, commits, branch: picked.append([c["sha"] for c in commits]) or 0,
+    )
+
+    def set_uat(has_uat):
+        links = [{"repo": "MyRepo", "url": "https://github.com/test-org/MyRepo/pull/5"}] if has_uat else []
+        monkeypatch.setattr(cli, "get_uat_pr_links", lambda ticket: links)
+
+    return SimpleNamespace(picked=picked, set_uat=set_uat)
+
+
+def run_prod(**overrides):
+    values = dict(ticket="PROJ-1", legacy_args=[], branch=None, repo=None)
+    values.update(overrides)
+    cli.cmd_createprodpr(argparse.Namespace(**values))
+
+
+def test_prod_pr_takes_its_commits_from_the_uat_pr_when_there_is_one(prod_sources):
+    prod_sources.set_uat(True)
+
+    run_prod()
+
+    assert prod_sources.picked == [["u1", "u2", "u3"]]
+
+
+def test_prod_pr_falls_back_to_the_dev_pr_without_a_uat_pr(prod_sources):
+    prod_sources.set_uat(False)
+
+    run_prod()
+
+    assert prod_sources.picked == [["d1", "d2"]]
+
+
+def test_prod_source_dev_ignores_the_uat_pr(prod_sources):
+    prod_sources.set_uat(True)
+
+    run_prod(source="dev")
+
+    assert prod_sources.picked == [["d1", "d2"]]
+
+
+def test_prod_source_uat_reports_a_repo_without_a_uat_pr(prod_sources, capsys):
+    prod_sources.set_uat(False)
+
+    run_prod(source="uat")
+
+    assert prod_sources.picked == []
+    assert "No UAT PR link" in capsys.readouterr().err

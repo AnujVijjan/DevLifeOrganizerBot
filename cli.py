@@ -48,6 +48,9 @@ from app.constants import (
     DEFAULT_ASSIGNEE,
     SP_DEPLOY_DEFAULT_REPO,
     DEPLOY_ENVIRONMENTS,
+    PR_ENV_DEV,
+    PROD_SOURCE_AUTO,
+    PROD_SOURCE_CHOICES,
 )
 from app.helper import (
     get_repo_branches,
@@ -71,6 +74,9 @@ from app.helper import (
     get_branch_sha,
     create_branch,
     cherry_pick_commits_onto_branch,
+    group_pr_links_by_repo,
+    select_prod_sources,
+    dedupe_commits,
     update_pull_request_body,
     create_prod_pull_request,
     add_jira_prod_pr_link,
@@ -263,47 +269,53 @@ def cmd_createprodpr(args: argparse.Namespace) -> None:
     _section(f"Creating PROD PRs — {jira_ticket}")
 
     try:
+        source = getattr(args, "source", PROD_SOURCE_AUTO)
         dev_links = get_dev_pr_links(jira_ticket)
+        uat_links = get_uat_pr_links(jira_ticket) if source != "dev" else []
 
-        if not dev_links:
+        if not dev_links and not uat_links:
             _err(
-                f"No DEV PR links found on ticket {jira_ticket}. "
+                f"No DEV or UAT PR links found on ticket {jira_ticket}. "
                 "Create DEV PRs first with 'createpr'."
             )
             sys.exit(1)
 
         if repo_filter:
-            filtered_dev_links = filter_dev_pr_links(dev_links, repo_filter)
-            if not filtered_dev_links:
-                available_repos = ", ".join(sorted({link["repo"] for link in dev_links}))
+            available_repos = ", ".join(sorted({link["repo"] for link in dev_links + uat_links}))
+            dev_links = filter_dev_pr_links(dev_links, repo_filter)
+            uat_links = filter_dev_pr_links(uat_links, repo_filter)
+            if not dev_links and not uat_links:
                 _err(
-                    f"No DEV PR link found for repo '{repo_filter}' on ticket {jira_ticket}. "
+                    f"No PR link found for repo '{repo_filter}' on ticket {jira_ticket}. "
                     f"Available repos: {available_repos}"
                 )
                 sys.exit(1)
-            dev_links = filtered_dev_links
             _info(f"Repo filter applied: {repo_filter}")
 
-        _info(f"DEV PR links found: {len(dev_links)}")
+        _info(f"PROD commit source: {source}")
 
         prod_branch_name = f"{feature_branch}-Prod"
-
-        for link in dev_links:
-            repo = link["repo"]
-            dev_pr_url = link["url"]
-
+        for repo, source_env, pr_urls in select_prod_sources(dev_links, uat_links, source):
             print(f"\n  Repo: {repo}")
-            print(f"  DEV PR: {dev_pr_url}")
+            for source_pr_url in pr_urls:
+                print(f"  {source_env} PR: {source_pr_url}")
 
             try:
-                pr_number = get_pr_number_from_url(dev_pr_url)
+                if not pr_urls:
+                    raise Exception(f"No {source_env} PR link on ticket {jira_ticket}.")
+                if source == PROD_SOURCE_AUTO and source_env == PR_ENV_DEV:
+                    _info("No UAT PR for this repo, using its DEV PR(s).")
 
-                raw_commits = get_pr_commits(repo, pr_number)
+                raw_commits = dedupe_commits([
+                    commit
+                    for source_pr_url in pr_urls
+                    for commit in get_pr_commits(repo, get_pr_number_from_url(source_pr_url))
+                ])
                 commit_refs = [
                     (c["sha"], c["commit"]["message"].split("\n")[0])
                     for c in raw_commits
                 ]
-                _info(f"DEV commits found: {len(commit_refs)}")
+                _info(f"{source_env} commits found: {len(commit_refs)}")
                 for sha, msg in commit_refs:
                     print(f"    - {sha[:7]}  {msg}")
 
@@ -335,7 +347,7 @@ def cmd_createprodpr(args: argparse.Namespace) -> None:
                     if commit_refs:
                         updated_body = (
                             f"Jira ticket: {jira_ticket}\n\n"
-                            f"**Cherry-picked commits from DEV PR:**\n"
+                            f"**Cherry-picked commits from {source_env} PR:**\n"
                             + "\n".join(f"- `{sha[:7]}` {msg}" for sha, msg in commit_refs)
                         )
                         update_pull_request_body(repo, existing_pr["number"], updated_body)
@@ -347,6 +359,7 @@ def cmd_createprodpr(args: argparse.Namespace) -> None:
                         target_prod_branch=prod_branch,
                         jira_ticket=jira_ticket,
                         commit_refs=commit_refs,
+                        source_env=source_env,
                     )
                     prod_pr_url = prod_pr["html_url"]
                     pr_created = True
@@ -408,18 +421,17 @@ def cmd_createuatpr(args: argparse.Namespace) -> None:
         _info(f"DEV PR links found: {len(dev_links)}")
 
         uat_branch_name = f"{feature_branch}-Uat"
-
-        for link in dev_links:
-            repo = link["repo"]
-            dev_pr_url = link["url"]
-
+        for repo, pr_urls in group_pr_links_by_repo(dev_links):
             print(f"\n  Repo: {repo}")
-            print(f"  DEV PR: {dev_pr_url}")
+            for dev_pr_url in pr_urls:
+                print(f"  DEV PR: {dev_pr_url}")
 
             try:
-                pr_number = get_pr_number_from_url(dev_pr_url)
-
-                raw_commits = get_pr_commits(repo, pr_number)
+                raw_commits = dedupe_commits([
+                    commit
+                    for dev_pr_url in pr_urls
+                    for commit in get_pr_commits(repo, get_pr_number_from_url(dev_pr_url))
+                ])
                 commit_refs = [
                     (c["sha"], c["commit"]["message"].split("\n")[0])
                     for c in raw_commits
@@ -506,8 +518,9 @@ def cmd_comparepr(args: argparse.Namespace) -> None:
 
         for r in report:
             print(f"\n  Repo: {r['repo']}")
-            for env, url in sorted(r["envs"].items()):
-                _info(f"{env}: {url}")
+            for env, urls in sorted(r["envs"].items()):
+                for url in urls:
+                    _info(f"{env}: {url}")
 
             if r["verdict"] == "MATCH":
                 _ok("MATCH — changes are identical across environments.")
@@ -730,10 +743,11 @@ def main() -> None:
 
     p = subparsers.add_parser(
         "createprodpr",
-        help="Create PROD PRs from DEV PRs on a Jira ticket",
-        usage="cli.py createprodpr ticket [--branch FEATURE_BRANCH] [--repo REPO]",
+        help="Create PROD PRs from the UAT (or DEV) PRs on a Jira ticket",
+        usage="cli.py createprodpr ticket [--branch FEATURE_BRANCH] [--repo REPO] [--source auto|dev|uat]",
         description=(
-            "Create PROD PRs from DEV PRs on a Jira ticket. "
+            "Create PROD PRs on a Jira ticket from each repo's UAT PRs, which carry any conflict fixes made "
+            "there, falling back to its DEV PRs when it has no UAT PR (see --source). "
             "Legacy positional feature-branch syntax still works: createprodpr TICKET [feature-branch]"
         ),
     )
@@ -741,6 +755,12 @@ def main() -> None:
     p.add_argument("legacy_args", nargs="*", help=argparse.SUPPRESS)
     p.add_argument("--branch", help="Feature branch name used to derive the PROD branch name (defaults to the Jira ticket ID)")
     p.add_argument("--repo", help="Only create the PROD PR for the specified repository")
+    p.add_argument(
+        "--source",
+        choices=PROD_SOURCE_CHOICES,
+        default=PROD_SOURCE_AUTO,
+        help="Where the commits come from: auto (UAT PRs, else DEV PRs), dev, or uat (default: auto)",
+    )
     p.set_defaults(func=cmd_createprodpr)
 
     p = subparsers.add_parser(
